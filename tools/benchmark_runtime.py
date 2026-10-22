@@ -41,6 +41,13 @@ def main():
         path.mkdir(parents=True, exist_ok=True)
         env[key] = str(path)
     python = str(ROOT / ".venv/bin/python")
+    for name, command in (
+        ("backend", [python, "tools/test_env.py", "--device", "cuda:0", "--num_envs", "4", "--steps", "30", "--precision", "tf32"]),
+        ("dataset_reset", [python, "tools/test_dataset_reset.py", "--device", "cuda:0"]),
+    ):
+        print(f"Validating {name}", flush=True)
+        with (args.output / f"{name}.log").open("w") as log:
+            subprocess.run(command, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
     results = []
     for storage, recompute in (("cuda:0", True), ("cuda:0", False), ("cpu", False), ("cpu", True)):
         name = f"{storage.replace(':', '')}_{'recompute' if recompute else 'retained'}"
