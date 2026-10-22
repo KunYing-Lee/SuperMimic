@@ -16,6 +16,7 @@ export WARP_CACHE_PATH="$PWD/.cache/warp"
 export TORCHINDUCTOR_CACHE_DIR="$PWD/.cache/inductor"
 export TRITON_CACHE_DIR="$PWD/.cache/triton"
 export CUDA_CACHE_PATH="$PWD/.cache/cuda"
+export TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=0
 export XDG_CACHE_HOME="$PWD/.cache"
 export TMPDIR="$PWD/.cache/tmp"
 mkdir -p "$TMPDIR"

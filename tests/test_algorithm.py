@@ -16,7 +16,7 @@ from supermimic.kinematics import G1Kinematics
 from supermimic.motion import MotionLib
 from supermimic.robot import default_joint_pos_list
 from supermimic.networks import WorldModel
-from supermimic.rotations import axis_angle_to_mat, rot_angle_sq, so3_exp, yaw_mat
+from supermimic.rotations import axis_angle_to_mat, matmul3, matvec3, rot_angle_sq, so3_exp, yaw_mat
 
 
 def state(batch=3):
@@ -88,6 +88,30 @@ class ReplayTests(unittest.TestCase):
 
 
 class RotationAndGoalTests(unittest.TestCase):
+    def test_geometry_contractions_match_broadcast_products_and_gradients(self):
+        generator = torch.Generator().manual_seed(14)
+        a = torch.randn(2, 1, 3, 3, dtype=torch.float64, generator=generator, requires_grad=True)
+        b = torch.randn(1, 4, 3, 3, dtype=torch.float64, generator=generator, requires_grad=True)
+        v = torch.randn(1, 4, 3, dtype=torch.float64, generator=generator, requires_grad=True)
+        torch.testing.assert_close(matmul3(a, b), a @ b, rtol=1e-14, atol=1e-14)
+        torch.testing.assert_close(matvec3(a, v), (a @ v.unsqueeze(-1)).squeeze(-1), rtol=1e-14, atol=1e-14)
+        self.assertTrue(torch.autograd.gradcheck(matmul3, (a, b)))
+        self.assertTrue(torch.autograd.gradcheck(matvec3, (a, v)))
+
+    def test_fp32_rotation_integration_preserves_geometry(self):
+        # Exercise the same composition depth as the 32-step imagined rollout.
+        # The reference computes every operation in float64 independently.
+        generator = torch.Generator().manual_seed(26)
+        increments = torch.randn(32, 8, 3, generator=generator) * .1
+        result = torch.eye(3).repeat(8, 1, 1)
+        reference = result.double()
+        for increment in increments:
+            result = matmul3(so3_exp(increment), result)
+            reference = so3_exp(increment.double()) @ reference
+        torch.testing.assert_close(result.double(), reference, rtol=3e-6, atol=1e-6)
+        torch.testing.assert_close(matmul3(result.transpose(-1, -2), result), torch.eye(3).expand(8, -1, -1), rtol=0, atol=2e-6)
+        torch.testing.assert_close(torch.linalg.det(result), torch.ones(8), rtol=0, atol=2e-6)
+
     def test_squared_angle_has_exact_zero_and_correct_small_gradient(self):
         vectors = torch.tensor([[0., 0., 0.], [0.0001, 0.0002, -0.0003]], dtype=torch.float64, requires_grad=True)
         angles = rot_angle_sq(torch.eye(3, dtype=torch.float64).expand(2, -1, -1), so3_exp(vectors))

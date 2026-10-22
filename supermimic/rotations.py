@@ -6,6 +6,21 @@ import torch
 import torch.nn.functional as F
 
 
+def matmul3(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Broadcasted 3x3 matrix product in the operands' arithmetic precision.
+
+    Geometry must not inherit the neural MLPs' global TF32 cuBLAS setting.
+    The explicit three-term contraction uses ordinary multiply/add operations,
+    preserving FP32 geometry and autograd without changing precision state.
+    """
+    return (a.unsqueeze(-1) * b.unsqueeze(-3)).sum(-2)
+
+
+def matvec3(a: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """Broadcasted 3x3 matrix/vector product, independent of TF32 matmul flags."""
+    return (a * v.unsqueeze(-2)).sum(-1)
+
+
 def quat_to_mat(q: torch.Tensor) -> torch.Tensor:
     q = F.normalize(q, dim=-1)
     w, x, y, z = q.unbind(-1)
@@ -67,7 +82,7 @@ def so3_exp(v: torch.Tensor) -> torch.Tensor:
     b = torch.where(small, 0.5 - theta2 / 24, (1 - torch.cos(theta)) / (theta2 + 1e-12))
     K = skew(v)
     eye = torch.eye(3, device=v.device, dtype=v.dtype).expand(K.shape)
-    return eye + a[..., None] * K + b[..., None] * (K @ K)
+    return eye + a[..., None] * K + b[..., None] * matmul3(K, K)
 
 
 def so3_log(R: torch.Tensor) -> torch.Tensor:
@@ -93,7 +108,7 @@ def skew(v: torch.Tensor) -> torch.Tensor:
 
 def rot_angle_sq(Ra: torch.Tensor, Rb: torch.Tensor) -> torch.Tensor:
     """Exact squared geodesic angle, using the SO(3) logarithm at zero and pi."""
-    return so3_log(Ra.transpose(-1, -2) @ Rb).square().sum(-1)
+    return so3_log(matmul3(Ra.transpose(-1, -2), Rb)).square().sum(-1)
 
 
 def yaw_mat(R: torch.Tensor) -> torch.Tensor:

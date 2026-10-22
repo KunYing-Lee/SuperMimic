@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from .mdp import INV_DIM, NUM_J, XI_DIM, invariant_features
-from .rotations import so3_exp
+from .rotations import matmul3, matvec3, so3_exp
 
 
 def mlp(inp: int, hidden: list[int], out: int, act=nn.ELU, layer_norm: bool = False) -> nn.Sequential:
@@ -93,10 +93,10 @@ class WorldModel(nn.Module):
         Rt = R.transpose(-1, -2)
         return torch.cat(
             (
-                (Rt @ (p1 - p).unsqueeze(-1)).squeeze(-1),
-                so3_log(Rt @ R1),
-                (Rt @ (v1 - v).unsqueeze(-1)).squeeze(-1),
-                (Rt @ (w1 - w).unsqueeze(-1)).squeeze(-1),
+                matvec3(Rt, p1 - p),
+                so3_log(matmul3(Rt, R1)),
+                matvec3(Rt, v1 - v),
+                matvec3(Rt, w1 - w),
                 q1 - q,
                 qd1 - qd,
             ),
@@ -108,10 +108,10 @@ class WorldModel(nn.Module):
         y = run_mlp(self.net, self.in_norm(self.inputs(S, a, xi_n)))
         d = y * self.out_norm.std() + self.out_norm.mean
         dp, dth, dv, dw, dq, dqd = d.split((3, 3, 3, 3, NUM_J, NUM_J), -1)
-        p1 = p + (R @ dp.unsqueeze(-1)).squeeze(-1)
-        R1 = R @ so3_exp(dth)
-        v1 = v + (R @ dv.unsqueeze(-1)).squeeze(-1)
-        w1 = w + (R @ dw.unsqueeze(-1)).squeeze(-1)
+        p1 = p + matvec3(R, dp)
+        R1 = matmul3(R, so3_exp(dth))
+        v1 = v + matvec3(R, dv)
+        w1 = w + matvec3(R, dw)
         return (p1, R1, v1, w1, q + dq, qd + dqd)
 
     @staticmethod
@@ -124,10 +124,10 @@ class WorldModel(nn.Module):
         Rt = R.transpose(-1, -2)
         return torch.cat(
             (
-                (Rt @ (ph - p).unsqueeze(-1)).squeeze(-1),
-                so3_log(Rt @ Rh),
-                (Rt @ (vh - v).unsqueeze(-1)).squeeze(-1),
-                (Rt @ (wh - w).unsqueeze(-1)).squeeze(-1),
+                matvec3(Rt, ph - p),
+                so3_log(matmul3(Rt, Rh)),
+                matvec3(Rt, vh - v),
+                matvec3(Rt, wh - w),
                 qh - q,
                 qdh - qd,
             ),

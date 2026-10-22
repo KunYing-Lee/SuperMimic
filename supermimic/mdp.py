@@ -12,7 +12,7 @@ import torch
 
 from .kinematics import G1Kinematics
 from .motion import CONTROL_DT, MotionLib
-from .rotations import mat_to_6d, quat_to_mat, mat_to_quat, rot_angle_sq, yaw_mat
+from .rotations import matmul3, matvec3, mat_to_6d, quat_to_mat, mat_to_quat, rot_angle_sq, yaw_mat
 
 STATE_DIM = 71
 OBS_DIM = 29 + 29 + 3 + 3 + 29
@@ -64,8 +64,8 @@ def invariant_features(S) -> torch.Tensor:
         (
             p[..., 2:3],
             -R[..., 2, :],  # gravity in the body frame; globally nonsingular
-            (Rt @ v.unsqueeze(-1)).squeeze(-1),
-            (Rt @ w.unsqueeze(-1)).squeeze(-1),
+            matvec3(Rt, v),
+            matvec3(Rt, w),
             q,
             qd,
         ),
@@ -92,7 +92,7 @@ class MDP:
         Rt = R.transpose(-1, -2)
         dq0 = xi[..., 1:30]
         g_b = -R[..., 2, :]  # R^T (0,0,-1)
-        return torch.cat((q - self.default_q - dq0, qd, (Rt @ w.unsqueeze(-1)).squeeze(-1), g_b, a_prev), -1)
+        return torch.cat((q - self.default_q - dq0, qd, matvec3(Rt, w), g_b, a_prev), -1)
 
     def add_noise(self, o: torch.Tensor) -> torch.Tensor:
         return o + (2 * torch.rand_like(o) - 1) * self.obs_noise
@@ -105,10 +105,10 @@ class MDP:
         bp, bR, bv, bw = self.kin.forward(p, R, v, w, q, qd)
         rp, rR = m.root_p[f], m.root_R[f]
         # reference bodies re-anchored to the robot's root (xy + yaw), as in BeyondMimic
-        dR = yaw_mat(R @ rR.transpose(-1, -2))
+        dR = yaw_mat(matmul3(R, rR.transpose(-1, -2)))
         anchor = torch.cat((p[..., :2], rp[..., 2:3]), -1)
-        ref_bp = anchor.unsqueeze(-2) + ((dR.unsqueeze(-3) @ (m.body_p[f] - rp.unsqueeze(-2)).unsqueeze(-1)).squeeze(-1))
-        ref_bR = dR.unsqueeze(-3) @ m.body_R[f]
+        ref_bp = anchor.unsqueeze(-2) + matvec3(dR.unsqueeze(-3), m.body_p[f] - rp.unsqueeze(-2))
+        ref_bR = matmul3(dR.unsqueeze(-3), m.body_R[f])
         e_pos = ((ref_bp - bp) ** 2).sum(-1).mean(-1)
         e_ori = rot_angle_sq(ref_bR, bR).mean(-1)
         e_lv = ((m.body_v[f] - bv) ** 2).sum(-1).mean(-1)
@@ -159,12 +159,12 @@ class MDP:
         Rt = R.transpose(-1, -2)
         rp, rR = m.root_p[f], m.root_R[f]
         bp = self.kin.forward(p, R, v, w, q, qd)[0]
-        dR = yaw_mat(R @ rR.transpose(-1, -2))
+        dR = yaw_mat(matmul3(R, rR.transpose(-1, -2)))
         anchor = torch.cat((p[..., :2], rp[..., 2:3]), -1)
-        ref_bp = anchor.unsqueeze(-2) + ((dR.unsqueeze(-3) @ (m.body_p[f] - rp.unsqueeze(-2)).unsqueeze(-1)).squeeze(-1))
-        e_body = (Rt.unsqueeze(-3) @ (ref_bp - bp).unsqueeze(-1)).squeeze(-1).flatten(-2)
-        e_root = (Rt @ (rp - p).unsqueeze(-1)).squeeze(-1)
-        rel = mat_to_6d(R.transpose(-1, -2) @ rR)
+        ref_bp = anchor.unsqueeze(-2) + matvec3(dR.unsqueeze(-3), m.body_p[f] - rp.unsqueeze(-2))
+        e_body = matvec3(Rt.unsqueeze(-3), ref_bp - bp).flatten(-2)
+        e_root = matvec3(Rt, rp - p)
+        rel = mat_to_6d(matmul3(R.transpose(-1, -2), rR))
         return torch.cat((invariant_features(S), m.q[f] - q, e_body, e_root, rel, xi), -1)
 
 

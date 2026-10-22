@@ -36,7 +36,7 @@ The following numerical settings are transcribed as factual configuration target
 | Exploration | Independent Gaussian action noise, standard deviation 0.1 |
 | Schedule | Update/data ratio 0.4; one policy update/world-model update; 320000 iterations |
 | Learning-rate schedule | Cosine to 0.03 times initial rate over 250000 iterations; constant thereafter |
-| Matmul arithmetic | TF32; no bf16 autocast in the aligned profile |
+| Matmul arithmetic | TF32 neural-network products; float32 multiply/add for 3D geometry; no bf16 autocast |
 | Reward standard deviations | Body position 0.3, orientation 0.4, linear velocity 1, angular velocity 3.14; root position 0.3, orientation 0.4 |
 | Reward weights | Four body terms 1 each; two root terms 0.5 each; action-rate penalty -0.1; joint-limit penalty -2; multiply all by 0.02 |
 | Hard failure thresholds | Root height error >0.25 m or absolute projected-gravity z difference >0.8 |

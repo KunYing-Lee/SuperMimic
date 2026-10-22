@@ -14,7 +14,7 @@ See [the source-backed audit](docs/paper_alignment.md) for equations, settings, 
 - 10 world-model updates with 2,048 eight-step windows; 4,096 imagined trajectories of length 32.
 - Adam learning rate 0.0002, policy betas 0.9/0.95, discount 0.99, lambda 0.95; critic 5 epochs × 4 minibatches.
 - Update/data ratio 0.4; 320,000 iterations; cosine learning-rate decay over 250,000 iterations to 0.03×.
-- Float32 tensors with TF32 matmuls. Gaussian action noise 0.1, no extra action clamp.
+- Float32 tensors with TF32 neural-network matmuls. Three-dimensional geometry uses float32 multiply/add operations so TF32 does not distort rigid rotations. Gaussian action noise 0.1, no extra action clamp.
 - Per-episode friction, joint calibration and torso CoM randomization. Native self-collision physics.
 - Exact reference-state initialization, natural clip end, and eight initial collection steps to form an eight-step replay window. Additional reset perturbations and episode time limits are opt-in.
 

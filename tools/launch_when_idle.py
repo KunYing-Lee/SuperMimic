@@ -78,6 +78,7 @@ def main():
     for cache in ("tmp", "triton", "cuda", "matplotlib"):
         (ROOT / ".cache" / cache).mkdir(parents=True, exist_ok=True)
     env.update(CUDA_VISIBLE_DEVICES=gpu["uuid"], PYTHONUNBUFFERED="1",
+               TORCH_ALLOW_TF32_CUBLAS_OVERRIDE="0",
                WARP_CACHE_PATH=str(ROOT / ".cache/warp"),
                TORCHINDUCTOR_CACHE_DIR=str(ROOT / ".cache/inductor"),
                TRITON_CACHE_DIR=str(ROOT / ".cache/triton"),
@@ -96,7 +97,7 @@ def main():
             subprocess.run(arguments, cwd=ROOT, env=env, stdout=log,
                            stderr=subprocess.STDOUT, check=True)
 
-    execute([python, "tools/test_env.py", "--device", "cuda:0", "--num_envs", "4", "--steps", "30"], smoke / "backend.log")
+    execute([python, "tools/test_env.py", "--device", "cuda:0", "--num_envs", "4", "--steps", "30", "--precision", "tf32"], smoke / "backend.log")
     execute([python, "tools/test_dataset_reset.py", "--device", "cuda:0"], smoke / "dataset_reset.log")
     common = [python, "supermimic/train.py", "--device", "cuda:0",
               "--log_dir", str(smoke), "--replay_device", args.replay_device, "--log_every", "1", "--ckpt_every", "2"]

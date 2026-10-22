@@ -58,6 +58,7 @@ def manifest(repo: str, args, motion, robot_path: str) -> dict:
             "goal_features": "73 floats per future frame; robot-body-local relative position, rotation6d, velocities, joints",
             "invariant_state": "height + body-frame gravity3 + body linear/angular velocity + joints; 68 dimensions",
             "reward_alignment": "relative Euler yaw via atan2(R10,R00); exact relative-forward-vertical chart singularity is not regularized",
+            "geometry_precision": "3x3 matrix and matrix-vector products use scalar FP32 multiply/add independent of TF32 MLP matmuls",
             "normalization": "running mean/variance inputs and dynamics increment parameterization",
             "activation_checkpointing": "exact recomputation, preserving RNG state",
         },

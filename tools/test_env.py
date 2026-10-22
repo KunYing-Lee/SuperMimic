@@ -46,11 +46,18 @@ def fixture_motion(kin, device):
 
 def assert_close(a, b, label, atol=3e-5):
     err = float((a - b).abs().max()) if a.numel() else 0.0
-    torch.testing.assert_close(a, b, atol=atol, rtol=3e-5, msg=label)
-    print(f"{label}: max_abs_error={err:.8g}")
+    print(f"{label}: max_abs_error={err:.8g}", flush=True)
+    torch.testing.assert_close(a, b, atol=atol, rtol=3e-5,
+                               msg=lambda message: f"{label}: max_abs_error={err:.8g}\n{message}")
 
 
-def run_checks(device="cpu", num_envs=2, steps=3):
+def run_checks(device="cpu", num_envs=2, steps=3, precision="fp32"):
+    # Set this explicitly rather than inherit a host-wide TF32 override. The
+    # geometry operators must agree with native physics under either setting.
+    if precision not in ("fp32", "tf32"):
+        raise ValueError(f"Unsupported precision: {precision}")
+    torch.backends.cuda.matmul.allow_tf32 = precision == "tf32"
+    print(f"Backend verification matmul precision: {torch.get_float32_matmul_precision()}", flush=True)
     torch.manual_seed(17)
     sim_cfg = make_sim(device)
     kin = G1Kinematics(device)
@@ -115,8 +122,9 @@ def main():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--num_envs", type=int, default=2)
     parser.add_argument("--steps", type=int, default=3)
+    parser.add_argument("--precision", choices=("fp32", "tf32"), default="fp32")
     args = parser.parse_args()
-    run_checks(args.device, args.num_envs, args.steps)
+    run_checks(args.device, args.num_envs, args.steps, args.precision)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from .kinematics import G1Kinematics
-from .rotations import mat_to_6d, quat_slerp, quat_to_mat, so3_log
+from .rotations import matmul3, matvec3, mat_to_6d, quat_slerp, quat_to_mat, so3_log
 
 CONTROL_DT = 0.02
 BIN_FRAMES = 50  # 1 s bins for return-based reset sampling
@@ -55,9 +55,9 @@ class MotionLib:
             qd = _gradient(j, CONTROL_DT)
             # angular velocity (world) by central differences of rotations
             w = torch.zeros_like(p)
-            w[1:-1] = so3_log(R[2:] @ R[:-2].transpose(-1, -2)) / (2 * CONTROL_DT)
-            w[0] = so3_log(R[1] @ R[0].T) / CONTROL_DT
-            w[-1] = so3_log(R[-1] @ R[-2].T) / CONTROL_DT
+            w[1:-1] = so3_log(matmul3(R[2:], R[:-2].transpose(-1, -2))) / (2 * CONTROL_DT)
+            w[0] = so3_log(matmul3(R[1], R[0].T)) / CONTROL_DT
+            w[-1] = so3_log(matmul3(R[-1], R[-2].T)) / CONTROL_DT
             root_p.append(p), root_R.append(R), root_v.append(v), root_w.append(w), jq.append(j), jqd.append(qd)
         cat = lambda xs: torch.cat(xs).to(device)  # noqa: E731
         self.root_p, self.root_R, self.root_v, self.root_w = cat(root_p), cat(root_R), cat(root_v), cat(root_w)
@@ -71,8 +71,8 @@ class MotionLib:
             self.body_p, self.body_R, self.body_v, self.body_w = torch.cat(bp), torch.cat(bR), torch.cat(bv), torch.cat(bw)
         # per-frame static goal parts: q, qd, root velocities in the root frame
         Rt = self.root_R.transpose(-1, -2)
-        self.root_v_local = (Rt @ self.root_v.unsqueeze(-1)).squeeze(-1)
-        self.root_w_local = (Rt @ self.root_w.unsqueeze(-1)).squeeze(-1)
+        self.root_v_local = matvec3(Rt, self.root_v)
+        self.root_w_local = matvec3(Rt, self.root_w)
         self.root_gz = self.root_R[:, 2, 2]  # -(projected gravity z) of the reference root: g_b = R^T (0,0,-1)
         # 1 s bins
         bin_clip, bin_start = [], []
@@ -114,10 +114,10 @@ class MotionLib:
         fut = self.future_frames(f, K)  # (B,K)
         p, R = S[:2]
         Rt = R.transpose(-1, -2).unsqueeze(1)
-        dp = (Rt @ (self.root_p[fut] - p.unsqueeze(1)).unsqueeze(-1)).squeeze(-1)
-        rot = mat_to_6d(Rt @ self.root_R[fut])
-        target_v = (Rt @ self.root_v[fut].unsqueeze(-1)).squeeze(-1)
-        target_w = (Rt @ self.root_w[fut].unsqueeze(-1)).squeeze(-1)
+        dp = matvec3(Rt, self.root_p[fut] - p.unsqueeze(1))
+        rot = mat_to_6d(matmul3(Rt, self.root_R[fut]))
+        target_v = matvec3(Rt, self.root_v[fut])
+        target_w = matvec3(Rt, self.root_w[fut])
         feats = torch.cat(
             (dp, rot, target_v, target_w, self.q[fut], self.qd[fut] * 0.1), -1
         )  # (B,K,73)

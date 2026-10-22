@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from .robot import G1_JOINT_NAMES, MJCF_PATH, TRACKED_BODIES
-from .rotations import axis_angle_to_mat, quat_to_mat
+from .rotations import axis_angle_to_mat, matmul3, matvec3, quat_to_mat
 
 
 class G1Kinematics:
@@ -74,10 +74,10 @@ class G1Kinematics:
                 continue
             j = self.joint_idx[i]
             Rp = Rs[par]
-            pi = P[par] + (Rp @ self.off_p[i].unsqueeze(-1)).squeeze(-1)
-            R_off = Rp @ self.off_R[i]
-            Ri = R_off @ axis_angle_to_mat(self.axes[i], q[..., j])
-            axis_w = (R_off @ self.axes[i].unsqueeze(-1)).squeeze(-1)
+            pi = P[par] + matvec3(Rp, self.off_p[i])
+            R_off = matmul3(Rp, self.off_R[i])
+            Ri = matmul3(R_off, axis_angle_to_mat(self.axes[i], q[..., j]))
+            axis_w = matvec3(R_off, self.axes[i])
             wi = W[par] + axis_w * qd[..., j : j + 1]
             vi = V[par] + torch.cross(W[par], pi - P[par], dim=-1)
             P[i], Rs[i], V[i], W[i] = pi, Ri, vi, wi

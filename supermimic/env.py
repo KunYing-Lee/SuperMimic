@@ -18,7 +18,7 @@ from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 from .mdp import MAX_STEP_REWARD, MDP, flatten_state
 from .motion import CONTROL_DT, MotionLib
 from .robot import G1_JOINT_NAMES, action_scale, make_g1_cfg
-from .rotations import mat_to_quat, quat_to_mat, so3_exp
+from .rotations import mat_to_quat, matmul3, matvec3, quat_to_mat, so3_exp
 
 
 @dataclass
@@ -165,7 +165,7 @@ class TrackingSim:
         root_v = self.sim.data.qvel[:, idx.free_joint_v_adr].clone()
         p = root_q[:, :3] - self.scene.env_origins
         R = quat_to_mat(root_q[:, 3:7])  # mjlab/MuJoCo use wxyz.
-        w = (R @ root_v[:, 3:6, None]).squeeze(-1)
+        w = matvec3(R, root_v[:, 3:6])
         d = self.robot.data
         return (p, R, root_v[:, :3], w, d.joint_pos[:, self.joint_ids].clone(),
                 d.joint_vel[:, self.joint_ids].clone())
@@ -204,7 +204,7 @@ class TrackingSim:
             rv = torch.stack(
                 (torch.empty(n, device=dev).uniform_(-0.1, 0.1), torch.empty(n, device=dev).uniform_(-0.1, 0.1),
                  torch.empty(n, device=dev).uniform_(-0.2, 0.2)), -1)  # fmt: skip
-            R = so3_exp(rv) @ R
+            R = matmul3(so3_exp(rv), R)
             v = v + torch.stack(
                 (torch.empty(n, device=dev).uniform_(-0.5, 0.5), torch.empty(n, device=dev).uniform_(-0.5, 0.5),
                  torch.empty(n, device=dev).uniform_(-0.2, 0.2)), -1)  # fmt: skip
