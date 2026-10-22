@@ -1,11 +1,9 @@
-#!/bin/bash
-# Start the long-lived 'supermimic' container with one GPU and the repository mounted.
-# Usage: docker/run_container.sh [GPU_INDEX] [MEMORY_LIMIT]
+#!/usr/bin/env bash
 set -euo pipefail
-GPU=${1:-0}
-MEM=${2:-128g}
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
-docker run -d --name supermimic --gpus "\"device=${GPU}\"" --memory="$MEM" --shm-size=16g --user root \
-  -e HOME=/root -e WARP_CACHE_PATH=/workspace/supermimic/.cache/warp -e MPLCONFIGDIR=/tmp/mpl \
-  -e TORCHINDUCTOR_CACHE_DIR=/workspace/supermimic/.cache/inductor \
-  -v "$REPO":/workspace/supermimic -w /workspace/supermimic supermimic:latest sleep infinity
+cd "$(dirname "$0")/.."
+GPU=${1:?Usage: docker/run_container.sh GPU_UUID}
+docker build -t supermimic-mjlab:locked -f docker/Dockerfile .
+docker run --rm -it --gpus "device=$GPU" --shm-size=16g \
+  -v "$PWD/data:/workspace/supermimic/data" \
+  -v "$PWD/logs:/workspace/supermimic/logs" \
+  -e CUDA_VISIBLE_DEVICES=0 supermimic-mjlab:locked

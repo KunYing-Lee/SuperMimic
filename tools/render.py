@@ -106,7 +106,7 @@ def main():
             label = f"{a.title}  {clip}  t={(f - int(d['clip_start'][c])) * 0.02:5.1f}s"
             if fell_at is not None:
                 label += "  [terminated]"
-            for xy, txt in (((16, 12), label), ((16, a.height - 38), "solid: simulated G1 policy (Isaac Lab + MuJoCo-Warp)   blue ghost: reference")):
+            for xy, txt in (((16, 12), label), ((16, a.height - 38), "solid: simulated G1 policy (mjlab + MuJoCo-Warp)   blue ghost: reference")):
                 bb = draw.textbbox(xy, txt, font=font)
                 draw.rectangle((bb[0] - 6, bb[1] - 4, bb[2] + 6, bb[3] + 4), fill=(255, 255, 255))
                 draw.text(xy, txt, fill=(20, 20, 20), font=font)

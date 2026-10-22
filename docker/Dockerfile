@@ -1,7 +1,12 @@
-# SuperMimic runtime: Isaac Lab 3 (main) kit-less image + tmux/ffmpeg/compiler.
-FROM isaac-lab-kitless:main-46d6cc3
-USER root
-RUN apt-get update && apt-get install -y --no-install-recommends tmux ffmpeg util-linux build-essential python3-dev && rm -rf /var/lib/apt/lists/*
-# Register the NVIDIA EGL vendor (the driver library is injected by the NVIDIA container runtime);
-# without it GLVND only knows Mesa and MuJoCo's offscreen renderer falls back to CPU rasterization.
-COPY 10_nvidia.json /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+# Optional native mjlab runtime. The host NVIDIA runtime supplies the driver.
+FROM ghcr.io/astral-sh/uv:0.13.0-python3.13-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential git ffmpeg libegl1 libgl1 libglib2.0-0 tmux \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /workspace/supermimic
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev
+COPY . .
+COPY docker/10_nvidia.json /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+ENV PATH="/workspace/supermimic/.venv/bin:${PATH}" MUJOCO_GL=egl
+CMD ["bash"]

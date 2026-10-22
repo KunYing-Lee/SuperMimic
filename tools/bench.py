@@ -35,7 +35,7 @@ fb = f[:4096]
 print("FK fwd (B=4096): %.2f ms" % (1000 * timeit(lambda: kin.forward(*Sb4))))
 print("reward fwd+bwd: %.2f ms" % (1000 * timeit(lambda: mdp.reward(Sb4, fb, a[:4096], a[:4096]).sum().backward())))
 print("obs fwd: %.2f ms" % (1000 * timeit(lambda: mdp.obs(Sb4, a[:4096], xi[:4096], fb))))
-print("goal: %.2f ms" % (1000 * timeit(lambda: motion.goal(fb, 10))))
+print("goal: %.2f ms" % (1000 * timeit(lambda: motion.goal(fb, 10, Sb4))))
 print("critic feats: %.2f ms" % (1000 * timeit(lambda: mdp.critic_features(Sb4, fb, normalize_xi(xi[:4096])))))
 print("---- torch.compile ----")
 kin_fwd_c = torch.compile(kin.forward)

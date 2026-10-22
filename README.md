@@ -1,202 +1,84 @@
-# SuperMimic reproduction on Isaac Lab 3 (kit-less, MuJoCo-Warp)
+# SuperMimic on mjlab
 
-**Unofficial** reproduction of *SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World
-Model* (arXiv 2610.28480) — no official code is released, so everything here is implemented from
-the paper. Target experiment: the controlled LAFAN1 comparison (Fig. 4a): 40 G1-retargeted LAFAN1
-clips (2.45 h), one GPU; the paper reaches evaluation normalized return 0.82 after 1.2 h on an H100.
+An independent implementation of [SuperMimic](https://arxiv.org/abs/2610.28480v1), migrated from [Chong Zhang's supermimic_vibed](https://github.com/zita-ch/supermimic_vibed) to **native mjlab 1.6.0 / MuJoCo-Warp 3.11.0**. Original history and MIT attribution are preserved.
 
-Author: **Chong Zhang** (ETH Zurich). License: [MIT](LICENSE).
+The experiment is **one G1 policy for 40 LAFAN1 motions** (264,705 source frames at 30 Hz, approximately 2.45 hours), corresponding to the paper's controlled comparison. This is not the BONES-SEED experiment or a reproduction of every interface in the paper. Historical upstream scores and videos describe a different implementation; they are retained in Git history and [MILESTONES.md](MILESTONES.md), not presented as results of this port.
 
-> **Disclaimer:** this repository was speed-vibecoded in 1 hour with an AI coding
-> assistant. It
-> deliberately does not live under any lab's organization, because the code is too much "slop"
-> for that: fast and unreviewed. Use it at
-> your own risk.
+## Paper settings and disclosed choices
 
-> **One G1 motion tracker for all 40 LAFAN1 clips, trained in only ~1.5 GPU-hours**
-> (1.47 h on a single RTX PRO 6000): evaluation return **0.829** with **0/40 failed clips**.
-> For scale, the paper's PPO-in-simulator baseline does not reach return 0.82 within 18 h on up to
-> 8 GPUs.
+See [the source-backed audit](docs/paper_alignment.md) for equations, settings, discrepancies, and unspecified details. The default training configuration uses:
 
-![SuperMimic G1 tracking LAFAN1 motions](results/supermimic_lafan1_highlight.gif)
+- 4,096 environments, 1,000 transitions/environment, 50 Hz control and four 5 ms physics steps.
+- 93-dimensional proprioception with 10-frame history; 10 future reference frames; 32-dimensional bounded latent.
+- World-model MLP 2048/2048/2048; policy encoder and decoder 2048/1024/512/256; critic 256/128.
+- 10 world-model updates with 2,048 eight-step windows; 4,096 imagined trajectories of length 32.
+- Adam learning rate 0.0002, policy betas 0.9/0.95, discount 0.99, lambda 0.95; critic 5 epochs × 4 minibatches.
+- Update/data ratio 0.4; 320,000 iterations; cosine learning-rate decay over 250,000 iterations to 0.03×.
+- Float32 tensors with TF32 matmuls. Gaussian action noise 0.1, no extra action clamp.
+- Per-episode friction, joint calibration and torso CoM randomization. Native self-collision physics.
+- Exact reference-state initialization, natural clip end, and eight initial collection steps to form an eight-step replay window. Additional reset perturbations and episode time limits are opt-in.
 
-*Solid robot: the trained policy simulated in Isaac Lab with MuJoCo-Warp. Blue ghost: the reference
-motion. Clips: dance, jumps, fall-and-get-up, sprint.*
+The original additional reference-orientation observation, bf16, hand-shaped soft termination, dynamics-error floors, 500 world-model-only iterations, and synthetic timeout return extrapolation are removed. The goal contains future reference poses and velocities relative to the current robot root/body frame; this exposes the position/yaw errors penalized by the reward while retaining 93-dimensional proprioception. This goal convention, the learned goal-conditioned termination MLP, and the finite-horizon return estimator are disclosed implementation choices where the paper is incomplete.
 
-Progress and timestamps: [MILESTONES.md](MILESTONES.md).
-
-## Layout
-
-| Path | What |
-|---|---|
-| `IsaacLab/` | Isaac Lab `main` @ 46d6cc3 (VERSION 3.0.0), unmodified — cloned by `tools/setup.sh`, not tracked |
-| `docker/` | `Dockerfile`: `supermimic:latest` = `isaac-lab-kitless:main-46d6cc3` (built from `IsaacLab/docker/Dockerfile.kitless`) + tmux, ffmpeg, gcc (for `torch.compile`); `run_container.sh` |
-| `data/` | not tracked; `tools/download_data.sh` fetches LAFAN1 G1 retargets (HF `lvhaidong/LAFAN1_Retargeting_Dataset`) and the G1 URDF/meshes, then builds `g1_29dof.xml` (MJCF) and the USD |
-| `supermimic/` | implementation (see below) |
-| `tools/` | setup, asset conversion, tests, benchmark, plotting, rendering, failure analysis |
-| `logs/<run>/` | not tracked: `train_log.csv`, `eval.csv`, checkpoints, stdout |
-| `results/` | success curve and highlight GIF (full videos are rendered locally with `tools/render.py`) |
+For a 32 GB GPU, the replay is stored in host memory in float32 and sampled onto the GPU, and differentiable rollouts use exact activation recomputation with preserved RNG state. These change storage/computation, not batch sizes, horizon, sampling distribution, or gradient truncation. Full-size GPU validation is required before the long run.
 
 ## Setup
 
-Neither Isaac Lab nor any data is included in this repository; the steps below fetch them.
-
-**Requirements:** Linux, an NVIDIA GPU (tested: RTX PRO 6000 Blackwell, driver 580 / CUDA 13),
-Docker with the NVIDIA Container Toolkit (`docker run --gpus` must work), ~20 GB of disk for the
-images and ~0.2 GB for the data.
-
-Physics: Newton with the MuJoCo-Warp solver (`NewtonCfg(MJWarpSolverCfg(...))`), no Kit, no PhysX;
-50 Hz control, 4 substeps of 5 ms, implicitfast integrator, MuJoCo collision pipeline.
-
-### 1. Isaac Lab (kit-less Docker image)
-
-The code runs against Isaac Lab 3 `main` at commit
-[`46d6cc3`](https://github.com/isaac-sim/IsaacLab/commit/46d6cc3d7b115906fad12efd372fbf69f4e3d3ed)
-(VERSION 3.0.0), unmodified, inside Isaac Lab's **kit-less** image (no Isaac Sim / Kit, no PhysX).
-Newer `main` commits may work but are untested.
+Linux with an NVIDIA GPU and a CUDA-12.8-compatible driver is required for training. CPU mjlab checks can run on macOS. Install `uv`, then:
 
 ```bash
-tools/setup.sh
+./tools/setup.sh
 ```
 
-which is equivalent to:
+This installs only the project's `.venv`, uses `uv.lock`, fetches an immutable LAFAN1 dataset revision, verifies 40 clips/264,705 frames, and generates MJCF directly from the source URDF. It needs no Isaac Lab, Isaac Sim, Newton wrapper, or USD assets. The downloader writes per-file SHA-256 hashes to `data/provenance.json`.
+
+Data is not redistributed: LAFAN1 motions are CC BY-NC-ND 4.0; the Unitree robot description is BSD-3-Clause. The source revision and file mapping are in `tools/download_data.py`. The URDF conversion preserves mass/inertia and collision geometry. The native position actuators use the source PD gains, effort limits, and reflected armatures; source velocity ratings are metadata, not an artificial hard velocity clamp.
+
+## Validation and launch
 
 ```bash
-git clone https://github.com/isaac-sim/IsaacLab.git
-git -C IsaacLab checkout 46d6cc3d7b115906fad12efd372fbf69f4e3d3ed
-(cd IsaacLab && docker build -f docker/Dockerfile.kitless -t isaac-lab-kitless:main-46d6cc3 .)
-docker build -t supermimic:latest docker/     # + tmux, ffmpeg, gcc, NVIDIA EGL vendor file
+uv run pytest -q
+uv run python tools/test_env.py --device cpu --steps 30
+CUDA_VISIBLE_DEVICES=GPU-uuid uv run python tools/test_env.py --device cuda:0 --num_envs 4 --steps 30
+CUDA_VISIBLE_DEVICES=GPU-uuid ./run_train.sh lafan1_mjlab
 ```
 
-Then start the long-lived container (repository mounted at `/workspace/supermimic`):
+`run_train.sh` runs in the foreground. Run it in tmux for persistent remote training. `RUN_ROOT` can place outputs outside the repository. A fresh run refuses to overwrite an existing training directory.
+
+For a shared NVIDIA host, the following waits for one card with no compute process, zero utilization, and at most 64 MiB used across two polls. It never stops existing workloads. A per-GPU advisory lock coordinates this launcher but cannot reserve the GPU against unrelated users.
 
 ```bash
-docker/run_container.sh 0 128g     # GPU index 0, 128 GB memory cap
+.venv/bin/python tools/launch_when_idle.py \
+  --gpu-model A800 --replay-device cuda:0 \
+  --run-name lafan1_mjlab_20261022 \
+  --runs-root /wuji-vefps-D/wuji-il/leekunying/SuperMimic/logs --wait
 ```
 
-### 2. Data: LAFAN1 motions and the G1 model
+The launcher first runs backend checks, two **full-size** training iterations, a full-state resume to iteration 3, and deterministic evaluation. Only duration/logging differ from the long run; failure stops the launch. After validation it starts a separate fresh 320,000-iteration run on the same GPU. The validation and training logs are separate. The queue waiting for a card is not an active training run.
 
-| What | Source | License | Goes to |
-|---|---|---|---|
-| 40 LAFAN1 clips retargeted to the 29-DoF G1 (30 fps CSV: root pos, root quat xyzw, 29 joint angles) | HF [`lvhaidong/LAFAN1_Retargeting_Dataset`](https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset), folder `g1/` | CC BY-NC-ND 4.0 (Ubisoft La Forge) | `data/lafan1_g1/*.csv` |
-| G1 description `g1_29dof_rev_1_0.urdf` + meshes (the model the clips were retargeted to) | same dataset, folder `robot_description/g1/` | BSD-3-Clause (Unitree) | `data/g1_description/` |
-
-With the container from step 1 running:
+Full restart checkpoint `last.pt` includes models, optimizers, replay, simulation integration state, domain parameters, reset statistics, observation history, random-generator state, and the update/data accumulator. Resume validates source hashes, assets, package versions, and mathematical configuration:
 
 ```bash
-tools/download_data.sh
+CUDA_VISIBLE_DEVICES=GPU-uuid ./run_train.sh lafan1_mjlab \
+  --resume logs/lafan1_mjlab/last.pt
 ```
 
-It downloads both, then converts the robot inside the container:
-`tools/urdf_to_mjcf.py` compiles the URDF into `data/g1_description/g1_29dof.xml` (free-floating
-pelvis), and `tools/mjcf_to_usd.py` converts that MJCF to `data/g1_usd/g1_29dof/g1_29dof.usda`,
-which Isaac Lab spawns. The conversion is offline because the kit-less importers cannot run inside
-an Isaac Lab process (see Deviations). Expected result:
+`ckpt_XXXXXX.pt` contains policy/world-model weights for evaluation; it is not a full restart checkpoint. The run manifest records code/dependency/data identities and implementation choices. A successful smoke or an alive process does not establish policy quality.
 
-```
-data/
-├── lafan1_g1/                  40 CSVs (dance, fallAndGetUp, fight, jumps, run, sprint, walk)
-├── g1_description/
-│   ├── g1_29dof_rev_1_0.urdf
-│   ├── g1_29dof.xml            generated MJCF
-│   └── meshes/*.STL            38 meshes
-└── g1_usd/g1_29dof/            generated USD (+ payloads/)
-```
+## Evaluation and rendering
 
-Check: `ls data/lafan1_g1 | wc -l` prints `40`, and the clips total 264,705 frames at 30 fps
-(2.45 h). `tools/test_env.py` checks the converted robot against the reference motions (FK vs.
-simulator should agree to ~1e-6):
+Evaluation plays every complete clip from its first frame with friction 1, no randomization/noise, and a deterministic policy. It reports failed clip names and both clip-mean and frame-weighted normalized returns. Early failure is penalized against the entire clip length.
 
 ```bash
-docker exec supermimic python tools/test_env.py
+CUDA_VISIBLE_DEVICES=GPU-uuid uv run python supermimic/evaluate.py \
+  --run_dir logs/lafan1_mjlab --ckpt logs/lafan1_mjlab/ckpt_002000.pt \
+  --record logs/lafan1_mjlab/traj.npz
+MUJOCO_GL=egl uv run python tools/render.py logs/lafan1_mjlab/traj.npz \
+  logs/lafan1_mjlab/tracking.mp4 --global_ghost
 ```
 
-## Usage
+Schedule evaluation on available capacity or after training. The paper's 0.82 evaluation return is a target, not a result of this port. Report motion acceptance separately from return and hardware throughput. RTX 5090 timings are not directly comparable to the paper's H100 timings.
 
-```bash
-CPUS=0-23 ./run_train.sh lafan1_main          # training in tmux session 'lafan1_main' (optional CPU pinning)
-docker exec -it supermimic tmux attach -t lafan1_main
-docker exec supermimic tmux new -d -s eval_main "cd /workspace/supermimic && python supermimic/evaluate.py --run_dir logs/lafan1_main --watch"
-docker exec supermimic python tools/plot.py logs/lafan1_main --out results/success_curve.png
-docker exec supermimic python supermimic/evaluate.py --run_dir logs/lafan1_main --ckpt logs/lafan1_main/ckpt_014000.pt --record traj.npz
-docker exec supermimic python tools/render.py traj.npz out.mp4 --clips dance2_subject1 --seconds 10
-```
+## License and attribution
 
-The first iterations are slow while `torch.compile` builds its kernels (cached in `.cache/`).
-Checkpoints are written every 2000 iterations to `logs/<run>/`; the eval watcher scores each on all
-40 clips and appends to `logs/<run>/eval.csv`.
-
-## Result (LAFAN1, 40 clips, one RTX PRO 6000 Blackwell)
-
-Evaluation return 0.824 at 1.24 h of training (paper: 0.82 at 1.2 h on an H100) and 0.829 with
-**0/40 failed clips** at 1.47 h (iteration 14000).
-
-![success curve](results/success_curve.png)
-
-## Implementation (paper section -> file)
-
-* G1 29-DoF, BeyondMimic actuators (10 Hz natural frequency, damping ratio 2, motor armatures,
-  action scale 0.25·τmax/Kp) — `supermimic/robot.py`.
-* Reference library: 30 -> 50 Hz resampling, finite-difference velocities, FK of 14 tracked bodies,
-  1 s bins — `supermimic/motion.py`, differentiable torch FK `supermimic/kinematics.py`
-  (matches the simulator's link poses/velocities to 1e-6).
-* MDP (App. A): observation (q−q0, q̇, IMU ω, projected gravity, a_{t−1}; 10-frame history; Table A.1
-  noise), K=10 future reference frames as the goal, BeyondMimic tracking reward without the
-  self-collision term and joint-limit weight −2, termination |e_z|>0.25 m or e_tilt>0.8, sim context
-  ξ = (friction U[0.3,1.2], joint offsets U[±0.01], torso CoM offset) — `supermimic/mdp.py`.
-* Simulator wrapper with return-based reset sampling (50% uniform / 40% softmax(−25 G_b/G_max) /
-  10% past-softmax) — `supermimic/env.py`.
-* World model f_ω: MLP(2048,2048,2048) on heading-invariant state features + action + ξ, predicting
-  frame-local increments; fit on k=8-step autoregressive windows (Eq. 1); analytic reward,
-  observation and termination heads — `supermimic/networks.py`, `supermimic/train.py`.
-* Policy: motion encoder MLP(2048,1024,512,256)->z∈R^32 (tanh), shared decoder
-  MLP(2048,1024,512,256); critic MLP(256,128). BPTT over H=32 imagined steps from replay-buffer
-  states with a soft survival weight and critic bootstrap (Eq. 2); critic on GAE(λ=0.95) targets
-  (Eq. 3), 5 epochs × 4 minibatches.
-* Hyperparameters as Table A.5: 4096 envs, buffer 1000 steps/env, action noise N(0, 0.1²),
-  UTD 0.4 (2.5 vectorized sim steps per iteration), 10 WM batches of 2048 windows per iteration,
-  4096 imagined rollouts, Adam lr 2e-4 (policy β=(0.9,0.95)), cosine decay to 0.03× over 250k
-  iterations, grad clip 1.0 (+ element-wise 0.1 for the policy), γ=0.99.
-* Evaluation (App. F.1): each clip once from its first frame, friction 1.0, no DR/noise,
-  deterministic policy; failure = training termination — `supermimic/evaluate.py`.
-
-## Deviations / choices not specified by the paper
-
-* **Self-collisions disabled** in the simulator (speed); robot–ground contacts use the URDF's
-  convex mesh hulls and foot spheres.
-* **bf16 autocast for MLP matmuls** (paper: TF32). On this RTX PRO 6000 it is 24 % faster; all
-  state integration, FK and rewards stay fp32.
-* Reward, observation and termination heads are **analytic** (allowed by §3.2); termination in
-  imagination is a sigmoid-softened version of the hard thresholds.
-* The policy observation additionally contains the reference root orientation relative to the
-  robot root (6D), i.e. BeyondMimic's `motion_anchor_ori_b` — IMU-observable; no global position.
-* 500 world-model-only warm-up iterations before policy updates start.
-* Torso-CoM and friction are randomized once per environment at start-up (BeyondMimic's
-  start-up events); joint offsets are resampled every episode. Episodes time out after 10 s or at
-  the clip end (bootstrapped, not terminal).
-* Do not run under a virtual-memory `ulimit -v`: Isaac Lab + Warp reserve ~430 GB of *virtual*
-  address space (CUDA VA reservations; RSS ~3 GB) and Warp's CUDA-graph capture needs its mempool,
-  which cannot initialize under such a limit. Cap memory with the container's cgroup
-  (`--memory`) instead. Rootless docker ignores `--cpuset-cpus`; pin CPUs with `taskset`
-  (`CPUS=...` in `run_train.sh`).
-* Asset import: the kit-less URDF/MJCF importers fail inside a running Isaac Lab process
-  (`PhysxJointAPI` schema not registered), so the USD is converted once, offline, by
-  `tools/mjcf_to_usd.py` (registers the importer's schema plugin first) and spawned with
-  `UsdFileCfg(variants={"Physics": "mujoco"})`.
-
-## Attribution and licenses
-
-* Method: Q. Liao, Y. Shao, J. Long, K. Zakka, R. Horowitz, P. Abbeel, K. Sreenath,
-  *SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model*,
-  CoRL 2026, arXiv:2610.28480. This code is an independent re-implementation, not affiliated with
-  the authors.
-* Isaac Lab (BSD-3-Clause), Newton and MuJoCo-Warp (Apache-2.0) are used unmodified.
-* LAFAN1 motions (Ubisoft La Forge): CC BY-NC-ND 4.0; G1 retargets and description by Unitree
-  (BSD-3-Clause). The motion data is not redistributed here; the demo GIF shows the
-  reference motions for illustration only and is not covered by this repository's MIT license.
-
-## License
-
-The code in this repository is released under the [MIT License](LICENSE).
-
-Copyright (c) 2026 ETH Zurich, Chong Zhang.
+[MIT](LICENSE), original copyright © 2026 ETH Zurich, Chong Zhang. Method: Q. Liao et al., *SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model*, arXiv:2610.28480. This repository is unofficial and independent of the paper's authors. Third-party data and libraries retain their own licenses.

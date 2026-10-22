@@ -1,3 +1,5 @@
+> Historical upstream log from `zita-ch/supermimic_vibed`. The timings and scores below are not mjlab-port results.
+
 # SuperMimic reproduction — milestone log
 Times are local time (CEST, UTC+2) unless marked UTC. One GPU (RTX PRO 6000 Blackwell), 48 CPU threads.
 

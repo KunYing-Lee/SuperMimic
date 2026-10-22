@@ -1,10 +1,17 @@
-#!/bin/bash
-# Launch SuperMimic training in a tmux session inside the 'supermimic' container.
-# Usage: [CPUS=0-23] ./run_train.sh <run_name> [train.py args...]
-# CPUS optionally pins the run with taskset (rootless docker ignores --cpuset-cpus).
-RUN=${1:-lafan1_main}
-shift || true
-PIN=""
-[ -n "${CPUS:-}" ] && PIN="taskset -c $CPUS"
-docker exec supermimic tmux new-session -d -s "$RUN" \
-  "cd /workspace/supermimic && mkdir -p logs/$RUN && $PIN python supermimic/train.py --log_dir logs/$RUN $* 2>&1 | tee -a logs/$RUN/stdout.log"
+#!/usr/bin/env bash
+# Foreground native mjlab training. Use tmux for persistent remote execution.
+set -euo pipefail
+cd "$(dirname "$0")"
+RUN=${1:?Usage: CUDA_VISIBLE_DEVICES=GPU-uuid ./run_train.sh RUN [arguments...]}
+shift
+: "${CUDA_VISIBLE_DEVICES:?Select exactly one available GPU by UUID before launching}"
+if [[ "$CUDA_VISIBLE_DEVICES" == *,* ]]; then
+  echo 'The controlled LAFAN1 experiment requires one GPU.' >&2
+  exit 2
+fi
+RUN_ROOT=${RUN_ROOT:-"$PWD/logs"}
+mkdir -p "$RUN_ROOT/$RUN"
+export PYTHONUNBUFFERED=1
+export WARP_CACHE_PATH="$PWD/.cache/warp"
+export TORCHINDUCTOR_CACHE_DIR="$PWD/.cache/inductor"
+exec .venv/bin/python supermimic/train.py --device cuda:0 --log_dir "$RUN_ROOT/$RUN" "$@"

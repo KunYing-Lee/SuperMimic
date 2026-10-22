@@ -1,5 +1,9 @@
 # caches and build output
 .cache/
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
 __pycache__/
 *.pyc
 build_*.log

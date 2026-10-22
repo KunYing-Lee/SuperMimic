@@ -92,17 +92,21 @@ def skew(v: torch.Tensor) -> torch.Tensor:
 
 
 def rot_angle_sq(Ra: torch.Tensor, Rb: torch.Tensor) -> torch.Tensor:
-    """Squared geodesic angle between rotations, differentiable (via acos of trace, clamped)."""
-    tr = (Ra * Rb).sum((-1, -2))  # trace(Ra^T Rb)
-    cos = torch.clamp((tr - 1) / 2, -1 + 1e-6, 1 - 1e-6)
-    return torch.acos(cos) ** 2
+    """Exact squared geodesic angle, using the SO(3) logarithm at zero and pi."""
+    return so3_log(Ra.transpose(-1, -2) @ Rb).square().sum(-1)
 
 
 def yaw_mat(R: torch.Tensor) -> torch.Tensor:
-    """Heading (yaw-only) rotation of R, from the projected x axis."""
-    fx, fy = R[..., 0, 0], R[..., 1, 0]
-    n = torch.sqrt(fx * fx + fy * fy + 1e-9)
-    c, s = fx / n, fy / n
+    """Conventional Euler heading as a proper SO(2) rotation.
+
+    Used only for the reward's relative robot/reference alignment. The heading
+    chart is intrinsically undefined when the relative forward axis is vertical
+    (R00 = R10 = 0); atan2 has no finite derivative there. No regularizer changes
+    the rotation or masks that singularity. Dynamics and goals use full body
+    frames and do not depend on this chart.
+    """
+    angle = torch.atan2(R[..., 1, 0], R[..., 0, 0])
+    c, s = torch.cos(angle), torch.sin(angle)
     o, one = torch.zeros_like(c), torch.ones_like(c)
     return torch.stack((c, -s, o, s, c, o, o, o, one), -1).reshape(R.shape[:-2] + (3, 3))
 

@@ -9,7 +9,7 @@ import numpy as np
 import torch
 
 from .kinematics import G1Kinematics
-from .rotations import mat_to_6d, quat_slerp, quat_to_mat, so3_log, yaw_mat
+from .rotations import mat_to_6d, quat_slerp, quat_to_mat, so3_log
 
 CONTROL_DT = 0.02
 BIN_FRAMES = 50  # 1 s bins for return-based reset sampling
@@ -17,12 +17,17 @@ BIN_FRAMES = 50  # 1 s bins for return-based reset sampling
 
 class MotionLib:
     def __init__(self, files: list[str], kin: G1Kinematics, device: str, src_fps: float = 30.0):
+        if not files:
+            raise ValueError("Motion directory contains no CSV clips")
+        self.files = list(files)
         self.device = device
         self.names = [os.path.splitext(os.path.basename(f))[0] for f in files]
         ps, qs, js = [], [], []
         lens = []
         for f in files:
             raw = torch.tensor(np.loadtxt(f, delimiter=","), dtype=torch.float32)
+            if raw.ndim != 2 or raw.shape[0] < 2 or raw.shape[1] != 36 or not torch.isfinite(raw).all():
+                raise ValueError(f"Expected finite T x 36 motion CSV with at least two frames: {f}")
             p, q_xyzw, j = raw[:, :3], raw[:, 3:7], raw[:, 7:36]
             quat = torch.cat((q_xyzw[:, 3:4], q_xyzw[:, :3]), -1)
             # resample to 50 Hz
@@ -72,7 +77,7 @@ class MotionLib:
         # 1 s bins
         bin_clip, bin_start = [], []
         for c in range(len(lens)):
-            nb = int(np.ceil(lens[c] / BIN_FRAMES))
+            nb = int(np.ceil((lens[c] - 1) / BIN_FRAMES))
             for b in range(nb):
                 bin_clip.append(c)
                 bin_start.append(int(self.clip_start[c]) + b * BIN_FRAMES)
@@ -85,6 +90,7 @@ class MotionLib:
             s = bin_start[b]
             e = min(s + BIN_FRAMES, int(self.clip_end[c]) + 1)
             self.frame_bin[s:e] = b
+        self.frame_bin[self.clip_end] = self.frame_bin[self.clip_end - 1]
 
     @staticmethod
     def from_dir(path: str, kin: G1Kinematics, device: str) -> MotionLib:
@@ -97,15 +103,23 @@ class MotionLib:
         fut = f.unsqueeze(-1) + torch.arange(1, K + 1, device=f.device)
         return torch.minimum(fut, end.unsqueeze(-1))
 
-    def goal(self, f: torch.Tensor, K: int) -> torch.Tensor:
-        """Goal features from the reference only: K future frames relative to the current reference frame."""
+    def goal(self, f: torch.Tensor, K: int, S) -> torch.Tensor:
+        """K future reference states expressed relative to the current robot root.
+
+        The full current robot orientation fixes the coordinate frame. This makes translation
+        and yaw tracking errors observable without adding reference data to the 93
+        proprioceptive observations. Applying one global SE(2) transform to robot
+        and reference leaves the goal unchanged.
+        """
         fut = self.future_frames(f, K)  # (B,K)
-        H = yaw_mat(self.root_R[f])  # (B,3,3)
-        Ht = H.transpose(-1, -2).unsqueeze(1)
-        dp = (Ht @ (self.root_p[fut] - self.root_p[f].unsqueeze(1)).unsqueeze(-1)).squeeze(-1)
-        rot = mat_to_6d(Ht @ self.root_R[fut])
+        p, R = S[:2]
+        Rt = R.transpose(-1, -2).unsqueeze(1)
+        dp = (Rt @ (self.root_p[fut] - p.unsqueeze(1)).unsqueeze(-1)).squeeze(-1)
+        rot = mat_to_6d(Rt @ self.root_R[fut])
+        target_v = (Rt @ self.root_v[fut].unsqueeze(-1)).squeeze(-1)
+        target_w = (Rt @ self.root_w[fut].unsqueeze(-1)).squeeze(-1)
         feats = torch.cat(
-            (dp, rot, self.root_v_local[fut], self.root_w_local[fut], self.q[fut], self.qd[fut] * 0.1), -1
+            (dp, rot, target_v, target_w, self.q[fut], self.qd[fut] * 0.1), -1
         )  # (B,K,73)
         return feats.reshape(f.shape[0], -1)
 

@@ -15,11 +15,11 @@ from .motion import CONTROL_DT, MotionLib
 from .rotations import mat_to_6d, quat_to_mat, mat_to_quat, rot_angle_sq, yaw_mat
 
 STATE_DIM = 71
-OBS_DIM = 29 + 29 + 3 + 3 + 29 + 6
+OBS_DIM = 29 + 29 + 3 + 3 + 29
 XI_DIM = 33
 NUM_J = 29
 
-# Table A.1 sensor noise (uniform half-widths), plus the reference-relative orientation
+# Table A.1 sensor noise (uniform half-widths).
 OBS_NOISE = torch.cat(
     (
         torch.full((29,), 0.01),
@@ -27,12 +27,7 @@ OBS_NOISE = torch.cat(
         torch.full((3,), 0.2),
         torch.full((3,), 0.05),
         torch.zeros(29),
-        torch.full((6,), 0.05),
     )
-)
-# normalization of the obs before the policy (qd and angular velocity are large)
-OBS_SCALE = torch.cat(
-    (torch.ones(29), torch.full((29,), 0.1), torch.full((3,), 0.25), torch.ones(3), torch.ones(29), torch.ones(6))
 )
 MAX_STEP_REWARD = (4 * 1.0 + 2 * 0.5) * CONTROL_DT
 
@@ -62,14 +57,13 @@ def unflatten_state(x: torch.Tensor):
 
 
 def invariant_features(S) -> torch.Tensor:
-    """Heading- and position-invariant state features: height, tilt (6D), body-frame velocities, joints."""
+    """Heading- and XY-invariant features: height, body-frame gravity, velocities, joints."""
     p, R, v, w, q, qd = S
-    H = yaw_mat(R)
     Rt = R.transpose(-1, -2)
     return torch.cat(
         (
             p[..., 2:3],
-            mat_to_6d(H.transpose(-1, -2) @ R),
+            -R[..., 2, :],  # gravity in the body frame; globally nonsingular
             (Rt @ v.unsqueeze(-1)).squeeze(-1),
             (Rt @ w.unsqueeze(-1)).squeeze(-1),
             q,
@@ -79,7 +73,7 @@ def invariant_features(S) -> torch.Tensor:
     )
 
 
-INV_DIM = 1 + 6 + 3 + 3 + 29 + 29
+INV_DIM = 1 + 3 + 3 + 3 + 29 + 29
 
 
 class MDP:
@@ -90,17 +84,15 @@ class MDP:
         self.soft_lo, self.soft_hi = mid - half * cfg.soft_limit_factor, mid + half * cfg.soft_limit_factor
         dev = default_q.device
         self.obs_noise = OBS_NOISE.to(dev)
-        self.obs_scale = OBS_SCALE.to(dev)
 
     # ---------------- observation ----------------
     def obs(self, S, a_prev, xi, f) -> torch.Tensor:
-        """Noise-free proprioceptive observation (+ reference-relative root orientation)."""
+        """The 93 noise-free proprioceptive observations in paper Table A.1."""
         p, R, v, w, q, qd = S
         Rt = R.transpose(-1, -2)
         dq0 = xi[..., 1:30]
         g_b = -R[..., 2, :]  # R^T (0,0,-1)
-        rel = mat_to_6d(Rt @ self.motion.root_R[f])
-        return torch.cat((q - self.default_q - dq0, qd, (Rt @ w.unsqueeze(-1)).squeeze(-1), g_b, a_prev, rel), -1)
+        return torch.cat((q - self.default_q - dq0, qd, (Rt @ w.unsqueeze(-1)).squeeze(-1), g_b, a_prev), -1)
 
     def add_noise(self, o: torch.Tensor) -> torch.Tensor:
         return o + (2 * torch.rand_like(o) - 1) * self.obs_noise
@@ -145,6 +137,14 @@ class MDP:
             }
         return r
 
+    def termination_features(self, S, f, goal) -> torch.Tensor:
+        """Heading-invariant state and reference for the learned goal-conditioned head.
+
+        The future-frame goal uses relative positions, so the current reference state
+        is also needed to retain its absolute height.
+        """
+        return torch.cat((invariant_features(S), invariant_features(self.motion.ref_state(f)), goal), -1)
+
     def termination(self, S, f) -> torch.Tensor:
         p, R = S[0], S[1]
         rp, rR = self.motion.root_p[f], self.motion.root_R[f]
@@ -152,28 +152,18 @@ class MDP:
         e_tilt = (rR[..., 2, 2] - R[..., 2, 2]).abs()
         return (e_z > self.cfg.term_height) | (e_tilt > self.cfg.term_tilt)
 
-    def soft_termination(self, S, f, tz: float = 0.02, tt: float = 0.04) -> torch.Tensor:
-        """Differentiable termination probability for imagined rollouts."""
-        p, R = S[0], S[1]
-        rp, rR = self.motion.root_p[f], self.motion.root_R[f]
-        e_z = (rp[..., 2] - p[..., 2]).abs()
-        e_tilt = (rR[..., 2, 2] - R[..., 2, 2]).abs()
-        alive = (1 - torch.sigmoid((e_z - self.cfg.term_height) / tz)) * (1 - torch.sigmoid((e_tilt - self.cfg.term_tilt) / tt))
-        return 1 - alive
-
     def critic_features(self, S, f, xi) -> torch.Tensor:
         """Critic input: invariant state, goal, sim context, and robot-vs-reference errors."""
         m = self.motion
         p, R, v, w, q, qd = S
-        H = yaw_mat(R)
-        Ht = H.transpose(-1, -2)
+        Rt = R.transpose(-1, -2)
         rp, rR = m.root_p[f], m.root_R[f]
         bp = self.kin.forward(p, R, v, w, q, qd)[0]
         dR = yaw_mat(R @ rR.transpose(-1, -2))
         anchor = torch.cat((p[..., :2], rp[..., 2:3]), -1)
         ref_bp = anchor.unsqueeze(-2) + ((dR.unsqueeze(-3) @ (m.body_p[f] - rp.unsqueeze(-2)).unsqueeze(-1)).squeeze(-1))
-        e_body = (Ht.unsqueeze(-3) @ (ref_bp - bp).unsqueeze(-1)).squeeze(-1).flatten(-2)
-        e_root = (Ht @ (rp - p).unsqueeze(-1)).squeeze(-1)
+        e_body = (Rt.unsqueeze(-3) @ (ref_bp - bp).unsqueeze(-1)).squeeze(-1).flatten(-2)
+        e_root = (Rt @ (rp - p).unsqueeze(-1)).squeeze(-1)
         rel = mat_to_6d(R.transpose(-1, -2) @ rR)
         return torch.cat((invariant_features(S), m.q[f] - q, e_body, e_root, rel, xi), -1)
 
