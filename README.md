@@ -20,7 +20,7 @@ See [the source-backed audit](docs/paper_alignment.md) for equations, settings, 
 
 The original additional reference-orientation observation, bf16, hand-shaped soft termination, dynamics-error floors, 500 world-model-only iterations, and synthetic timeout return extrapolation are removed. The goal contains future reference poses and velocities relative to the current robot root/body frame; this exposes the position/yaw errors penalized by the reward while retaining 93-dimensional proprioception. This goal convention, the learned goal-conditioned termination MLP, and the finite-horizon return estimator are disclosed implementation choices where the paper is incomplete.
 
-For a 32 GB GPU, the replay is stored in host memory in float32 and sampled onto the GPU, and differentiable rollouts use exact activation recomputation with preserved RNG state. These change storage/computation, not batch sizes, horizon, sampling distribution, or gradient truncation. Full-size GPU validation is required before the long run.
+Replay storage and activation recomputation are runtime choices measured with `tools/benchmark_runtime.py`. GPU replay without recomputation was fastest on the tested RTX 5090 and fit within 32 GB; see [measurements](docs/mars5090_runtime.md). These choices preserve batch sizes, horizon, sampling distribution and gradient truncation. Full-size validation is required before long training.
 
 ## Setup
 
