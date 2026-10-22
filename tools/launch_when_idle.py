@@ -42,6 +42,8 @@ def main():
     parser.add_argument("--replay-device", default="cpu", choices=["cpu", "cuda:0"])
     parser.add_argument("--poll-seconds", type=int, default=30)
     args = parser.parse_args()
+    if args.poll_seconds < 1 or Path(args.run_name).name != args.run_name:
+        parser.error("poll-seconds must be positive and run-name must be a single directory name")
     run = args.runs_root.resolve() / args.run_name
     smoke = run.with_name(run.name + "_preflight")
     if run.exists() or smoke.exists():
@@ -73,9 +75,16 @@ def main():
         break
 
     env = os.environ.copy()
+    for cache in ("tmp", "triton", "cuda", "matplotlib"):
+        (ROOT / ".cache" / cache).mkdir(parents=True, exist_ok=True)
     env.update(CUDA_VISIBLE_DEVICES=gpu["uuid"], PYTHONUNBUFFERED="1",
                WARP_CACHE_PATH=str(ROOT / ".cache/warp"),
-               TORCHINDUCTOR_CACHE_DIR=str(ROOT / ".cache/inductor"))
+               TORCHINDUCTOR_CACHE_DIR=str(ROOT / ".cache/inductor"),
+               TRITON_CACHE_DIR=str(ROOT / ".cache/triton"),
+               CUDA_CACHE_PATH=str(ROOT / ".cache/cuda"),
+               XDG_CACHE_HOME=str(ROOT / ".cache"),
+               MPLCONFIGDIR=str(ROOT / ".cache/matplotlib"),
+               TMPDIR=str(ROOT / ".cache/tmp"))
     python = str(ROOT / ".venv/bin/python")
     smoke.mkdir(parents=True)
     print(f"Selected GPU {gpu['index']} {gpu['uuid']}; full-size validation begins.", flush=True)
@@ -88,6 +97,7 @@ def main():
                            stderr=subprocess.STDOUT, check=True)
 
     execute([python, "tools/test_env.py", "--device", "cuda:0", "--num_envs", "4", "--steps", "30"], smoke / "backend.log")
+    execute([python, "tools/test_dataset_reset.py", "--device", "cuda:0"], smoke / "dataset_reset.log")
     common = [python, "supermimic/train.py", "--device", "cuda:0",
               "--log_dir", str(smoke), "--replay_device", args.replay_device, "--log_every", "1", "--ckpt_every", "2"]
     # Only duration/log cadence differ. Environment count, replay capacity,
