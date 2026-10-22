@@ -29,6 +29,7 @@ def main():
     files = sorted(args.motion_dir.glob("*.csv"))
     if not files:
         raise ValueError("No motion files found")
+    sim_cfg = make_sim(args.device)
     kin = G1Kinematics(args.device)
     first_frames = []
     # The first three source frames retain the true first-frame state and its
@@ -46,7 +47,7 @@ def main():
             trimmed.append(str(dest))
         motion = MotionLib(trimmed, kin, args.device)
     mdp = MDP(kin, motion, torch.tensor(default_joint_pos_list(), device=args.device))
-    env = TrackingSim(make_sim(args.device), len(files), motion, mdp, eval_mode=True)
+    env = TrackingSim(sim_cfg, len(files), motion, mdp, eval_mode=True)
     ids = torch.arange(len(files), device=args.device)
     env.reset(ids, motion.clip_start)
     assert env.max_episode_steps is None and not env.reset_noise

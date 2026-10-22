@@ -84,6 +84,7 @@ dev = args.device
 if not dev.startswith("cuda") or not torch.cuda.is_available():
     raise RuntimeError("mjlab training requires the selected CUDA device")
 torch.cuda.set_device(dev)
+sim_cfg = make_sim(dev, args)  # Before all CUDA tensor allocations.
 os.makedirs(args.log_dir, exist_ok=True)
 if not args.resume and any(os.path.exists(os.path.join(args.log_dir, name)) for name in ("manifest.json", "args.json", "train_log.csv", "last.pt")):
     raise FileExistsError("Fresh training requires a new run directory; use --resume for a saved run")
@@ -286,7 +287,6 @@ def policy_update():
 
 
 # ------------------------------------------------------------------------------------------------
-sim_cfg = make_sim(dev, args)
 env = TrackingSim(sim_cfg, args.num_envs, motion, mdp, gamma=args.gamma,
                   max_episode_steps=args.max_episode_steps, reset_noise=args.reset_noise)
 buffer = ReplayBuffer(args.buffer_steps, args.num_envs, dev, args.replay_device)

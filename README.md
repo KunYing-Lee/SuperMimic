@@ -24,7 +24,7 @@ For a 32 GB GPU, the replay is stored in host memory in float32 and sampled onto
 
 ## Setup
 
-Linux with an NVIDIA GPU and a CUDA-12.8-compatible driver is required for training. CPU mjlab checks can run on macOS. Install `uv`, then:
+Linux with an NVIDIA GPU is required for training. The pinned Torch wheel uses CUDA 12.8; the pinned Warp wheel reports CUDA 12.9, so the driver must support both runtimes. CPU mjlab checks can run on macOS. Install `uv`, then:
 
 ```bash
 ./tools/setup.sh
@@ -46,6 +46,8 @@ CUDA_VISIBLE_DEVICES=GPU-uuid ./run_train.sh lafan1_mjlab
 `run_train.sh` runs in the foreground. Run it in tmux for persistent remote training. `RUN_ROOT` can place outputs outside the repository. A fresh run refuses to overwrite an existing training directory.
 
 For a shared NVIDIA host, the following waits for one card with no compute process, zero utilization, and at most 64 MiB used across two polls. It never stops existing workloads. A per-GPU advisory lock coordinates this launcher but cannot reserve the GPU against unrelated users.
+
+On the A800 workspace host with system driver 550.127.05, the installed official CUDA 13 compatibility library was verified with Torch matrix multiplication and Warp CUDA graph capture. Set `LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat:$LD_LIBRARY_PATH` for this process before launch. This uses the existing compatibility installation without changing the system driver. Keep caches, temporary files and outputs in the workspace; the launcher sets their locations under the project.
 
 ```bash
 .venv/bin/python tools/launch_when_idle.py \

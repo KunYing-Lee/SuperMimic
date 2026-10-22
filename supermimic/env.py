@@ -25,6 +25,8 @@ from .rotations import mat_to_quat, quat_to_mat, so3_exp
 class TrackingSimCfg:
     device: str = "cuda:0"
     decimation: int = 4
+    torch_stream: torch.cuda.Stream | None = field(default=None, repr=False, compare=False)
+    warp_stream: wp.Stream | None = field(default=None, repr=False, compare=False)
     physics: SimulationCfg = field(default_factory=lambda: SimulationCfg(
         njmax=500, nconmax=128,
         mujoco=MujocoCfg(timestep=CONTROL_DT / 4, integrator="implicitfast", cone="pyramidal"),
@@ -32,7 +34,23 @@ class TrackingSimCfg:
 
 
 def make_sim(device: str, args=None) -> TrackingSimCfg:
-    return TrackingSimCfg(device=device)
+    """Set up shared execution before allocating any CUDA model or motion tensors.
+
+    CUDA graph capture cannot use the legacy null stream. The retained non-default
+    stream is both Torch's and Warp's current stream, so physics, model operations,
+    and tensor allocation/free all use one ordered execution queue.
+    """
+    cfg = TrackingSimCfg(device=device)
+    if torch.device(device).type == "cuda":
+        wp.init()
+        torch.cuda.set_device(device)
+        previous = torch.cuda.current_stream(device)
+        cfg.torch_stream = torch.cuda.Stream(device=device)
+        cfg.torch_stream.wait_stream(previous)
+        torch.cuda.set_stream(cfg.torch_stream)
+        cfg.warp_stream = wp.stream_from_torch(cfg.torch_stream)
+        wp.set_stream(cfg.warp_stream)
+    return cfg
 
 
 def _ground(spec: mujoco.MjSpec) -> None:
@@ -42,10 +60,15 @@ def _ground(spec: mujoco.MjSpec) -> None:
 
 
 def build_scene(cfg: TrackingSimCfg, num_envs: int):
-    # Keep Torch policy/model operations and Warp physics on the same CUDA
-    # stream. Zero-copy state reads/writes then have a defined execution order.
+    # make_sim must run before the caller's CUDA allocations; switching streams
+    # here would leave those allocations with unrecorded cross-stream lifetimes.
     if torch.device(cfg.device).type == "cuda":
-        wp.set_stream(wp.stream_from_torch(torch.cuda.current_stream(cfg.device)))
+        if cfg.torch_stream is None or cfg.warp_stream is None:
+            raise RuntimeError("Create CUDA configuration with make_sim before allocating learner tensors")
+        if torch.cuda.current_stream(cfg.device).cuda_stream != cfg.torch_stream.cuda_stream:
+            raise RuntimeError("Torch current stream changed after shared simulator execution setup")
+        if wp.get_stream(cfg.device).cuda_stream != cfg.warp_stream.cuda_stream:
+            raise RuntimeError("Warp current stream changed after shared simulator execution setup")
     if abs(cfg.physics.mujoco.timestep * cfg.decimation - CONTROL_DT) > 1e-12:
         raise ValueError("Physics decimation must equal the 50 Hz motion/control period")
     scene = Scene(SceneCfg(num_envs=num_envs, env_spacing=0.0,

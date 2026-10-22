@@ -43,6 +43,7 @@ from supermimic.robot import default_joint_pos_list
 torch.backends.cuda.matmul.allow_tf32 = True
 dev = args.device
 torch.cuda.set_device(dev)
+sim_cfg = make_sim(dev, args)  # Before all CUDA tensor allocations.
 kin = G1Kinematics(dev)
 motion = MotionLib.from_dir(args.motion_dir, kin, dev)
 mdp = MDP(kin, motion, torch.tensor(default_joint_pos_list(), device=dev))
@@ -98,7 +99,6 @@ def evaluate(env: TrackingSim, ck: dict, record: str | None = None) -> dict:
     return res
 
 
-sim_cfg = make_sim(dev, args)
 env = TrackingSim(sim_cfg, C, motion, mdp, eval_mode=True)
 if args.ckpt:
     ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)

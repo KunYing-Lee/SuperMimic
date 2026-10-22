@@ -52,10 +52,11 @@ def assert_close(a, b, label, atol=3e-5):
 
 def run_checks(device="cpu", num_envs=2, steps=3):
     torch.manual_seed(17)
+    sim_cfg = make_sim(device)
     kin = G1Kinematics(device)
     motion = fixture_motion(kin, device)
     mdp = MDP(kin, motion, torch.tensor(default_joint_pos_list(), device=device))
-    env = TrackingSim(make_sim(device), num_envs, motion, mdp)
+    env = TrackingSim(sim_cfg, num_envs, motion, mdp)
     assert env.max_episode_steps is None and not env.reset_noise
     ids = torch.arange(num_envs, device=device)
     frames = 10 + ids % 20
