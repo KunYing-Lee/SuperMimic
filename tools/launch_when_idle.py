@@ -40,6 +40,7 @@ def main():
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--gpu-model", required=True, help="Exact model substring, e.g. A800 or RTX 5090")
     parser.add_argument("--replay-device", default="cpu", choices=["cpu", "cuda:0"])
+    parser.add_argument("--activation-checkpoint", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--poll-seconds", type=int, default=30)
     args = parser.parse_args()
     if args.poll_seconds < 1 or Path(args.run_name).name != args.run_name:
@@ -87,6 +88,7 @@ def main():
                MPLCONFIGDIR=str(ROOT / ".cache/matplotlib"),
                TMPDIR=str(ROOT / ".cache/tmp"))
     python = str(ROOT / ".venv/bin/python")
+    recompute = "--activation_checkpoint" if args.activation_checkpoint else "--no-activation_checkpoint"
     smoke.mkdir(parents=True)
     print(f"Selected GPU {gpu['index']} {gpu['uuid']}; full-size validation begins.", flush=True)
     (smoke / "gpu.json").write_text(json.dumps(gpu, indent=2) + "\n")
@@ -100,7 +102,7 @@ def main():
     execute([python, "tools/test_env.py", "--device", "cuda:0", "--num_envs", "4", "--steps", "30", "--precision", "tf32"], smoke / "backend.log")
     execute([python, "tools/test_dataset_reset.py", "--device", "cuda:0"], smoke / "dataset_reset.log")
     common = [python, "supermimic/train.py", "--device", "cuda:0",
-              "--log_dir", str(smoke), "--replay_device", args.replay_device, "--log_every", "1", "--ckpt_every", "2"]
+              "--log_dir", str(smoke), "--replay_device", args.replay_device, recompute, "--log_every", "1", "--ckpt_every", "2"]
     # Only duration/log cadence differ. Environment count, replay capacity,
     # batches, network widths and 32-step BPTT all use the long-run defaults.
     execute(common + ["--iterations", "2"], smoke / "train.log")
@@ -110,7 +112,7 @@ def main():
     run.mkdir()
     (run / "gpu.json").write_text(json.dumps(gpu, indent=2) + "\n")
     print(f"Validation passed. Starting fresh 320000-iteration training in {run}", flush=True)
-    execute([python, "supermimic/train.py", "--device", "cuda:0", "--log_dir", str(run), "--replay_device", args.replay_device], run / "stdout.log")
+    execute([python, "supermimic/train.py", "--device", "cuda:0", "--log_dir", str(run), "--replay_device", args.replay_device, recompute], run / "stdout.log")
     print("Training completed.", flush=True)
 
 
