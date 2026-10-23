@@ -81,6 +81,14 @@ MUJOCO_GL=egl uv run python tools/render.py logs/lafan1_mjlab/traj.npz \
 
 Schedule evaluation on available capacity or after training. The paper's 0.82 evaluation return is a target, not a result of this port. Report motion acceptance separately from return and hardware throughput. RTX 5090 timings are not directly comparable to the paper's H100 timings.
 
+## Dataset extensions and comparison workflow
+
+The default remains the original 40-clip experiment. `MotionLib` also supports a per-file `motion_rates.json` map for mixed-rate libraries, resampling each clip directly to 50 Hz. `tools/prepare_motion_extension.py` imports the supported manifest-described 20-clip qpos36 bundle with checksum validation and quaternion-column reordering only. Inputs remain private.
+
+For an authorized dataset extension, `tools/extend_checkpoint_dataset.py` explicitly migrates an append-only library into a new full checkpoint and run path. It preserves the original clips, model/optimizer/replay/simulator/RNG state and learning-rate iteration; new bins start empty and sampling-average history restarts on the expanded domain. Ordinary same-dataset resume remains strict. Inspect each tool with `--help` and retain the migration provenance.
+
+Use [the fixed-evaluation comparison workflow](docs/evaluation_comparison.md) to compare base and added clips, global drift and common-prefix tracking errors. The reusable CPU tool replaces run-specific analysis scripts; private reports stay under ignored `results/analysis/`.
+
 ## License and attribution
 
 [MIT](LICENSE), original copyright © 2026 ETH Zurich, Chong Zhang. Method: Q. Liao et al., *SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model*, arXiv:2610.28480. This repository is unofficial and independent of the paper's authors. Third-party data and libraries retain their own licenses.
