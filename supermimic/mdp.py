@@ -12,7 +12,15 @@ import torch
 
 from .kinematics import G1Kinematics
 from .motion import CONTROL_DT, MotionLib
-from .rotations import matmul3, matvec3, mat_to_6d, quat_to_mat, mat_to_quat, rot_angle_sq, yaw_mat
+from .rotations import (
+    mat_to_6d,
+    mat_to_quat,
+    matmul3,
+    matvec3,
+    quat_to_mat,
+    rot_angle_sq,
+    yaw_mat,
+)
 
 STATE_DIM = 71
 OBS_DIM = 29 + 29 + 3 + 3 + 29
@@ -53,7 +61,17 @@ def flatten_state(S) -> torch.Tensor:
 
 
 def unflatten_state(x: torch.Tensor):
-    return x[..., 0:3], quat_to_mat(x[..., 3:7]), x[..., 7:10], x[..., 10:13], x[..., 13:42], x[..., 42:71]
+    n = (x.shape[-1] - 13) // 2
+    if x.shape[-1] != 13 + 2 * n or n < 1:
+        raise ValueError("Invalid generalized robot state dimension")
+    return (
+        x[..., 0:3],
+        quat_to_mat(x[..., 3:7]),
+        x[..., 7:10],
+        x[..., 10:13],
+        x[..., 13 : 13 + n],
+        x[..., 13 + n :],
+    )
 
 
 def invariant_features(S) -> torch.Tensor:
@@ -77,22 +95,48 @@ INV_DIM = 1 + 3 + 3 + 3 + 29 + 29
 
 
 class MDP:
-    def __init__(self, kin: G1Kinematics, motion: MotionLib, default_q: torch.Tensor, cfg: RewardCfg = RewardCfg()):
+    def __init__(
+        self,
+        kin: G1Kinematics,
+        motion: MotionLib,
+        default_q: torch.Tensor,
+        cfg: RewardCfg = RewardCfg(),
+    ):
         self.kin, self.motion, self.cfg = kin, motion, cfg
         self.default_q = default_q
+        self.num_joints = len(default_q)
+        self.obs_dim = 3 * self.num_joints + 6
+        self.inv_dim = 10 + 2 * self.num_joints
+        self.xi_dim = self.num_joints + 4
+        self.critic_extra = (
+            self.num_joints + len(motion.body_p[0]) * 3 + 9 + self.xi_dim
+        )
         mid, half = (kin.q_lo + kin.q_hi) / 2, (kin.q_hi - kin.q_lo) / 2
-        self.soft_lo, self.soft_hi = mid - half * cfg.soft_limit_factor, mid + half * cfg.soft_limit_factor
+        self.soft_lo, self.soft_hi = (
+            mid - half * cfg.soft_limit_factor,
+            mid + half * cfg.soft_limit_factor,
+        )
         dev = default_q.device
-        self.obs_noise = OBS_NOISE.to(dev)
+        self.obs_noise = torch.cat(
+            (
+                torch.full((self.num_joints,), 0.01),
+                torch.full((self.num_joints,), 0.5),
+                torch.full((3,), 0.2),
+                torch.full((3,), 0.05),
+                torch.zeros(self.num_joints),
+            )
+        ).to(dev)
 
     # ---------------- observation ----------------
     def obs(self, S, a_prev, xi, f) -> torch.Tensor:
         """The 93 noise-free proprioceptive observations in paper Table A.1."""
         p, R, v, w, q, qd = S
         Rt = R.transpose(-1, -2)
-        dq0 = xi[..., 1:30]
+        dq0 = xi[..., 1 : 1 + self.num_joints]
         g_b = -R[..., 2, :]  # R^T (0,0,-1)
-        return torch.cat((q - self.default_q - dq0, qd, matvec3(Rt, w), g_b, a_prev), -1)
+        return torch.cat(
+            (q - self.default_q - dq0, qd, matvec3(Rt, w), g_b, a_prev), -1
+        )
 
     def add_noise(self, o: torch.Tensor) -> torch.Tensor:
         return o + (2 * torch.rand_like(o) - 1) * self.obs_noise
@@ -107,7 +151,9 @@ class MDP:
         # reference bodies re-anchored to the robot's root (xy + yaw), as in BeyondMimic
         dR = yaw_mat(matmul3(R, rR.transpose(-1, -2)))
         anchor = torch.cat((p[..., :2], rp[..., 2:3]), -1)
-        ref_bp = anchor.unsqueeze(-2) + matvec3(dR.unsqueeze(-3), m.body_p[f] - rp.unsqueeze(-2))
+        ref_bp = anchor.unsqueeze(-2) + matvec3(
+            dR.unsqueeze(-3), m.body_p[f] - rp.unsqueeze(-2)
+        )
         ref_bR = matmul3(dR.unsqueeze(-3), m.body_R[f])
         e_pos = ((ref_bp - bp) ** 2).sum(-1).mean(-1)
         e_ori = rot_angle_sq(ref_bR, bR).mean(-1)
@@ -143,7 +189,10 @@ class MDP:
         The future-frame goal uses relative positions, so the current reference state
         is also needed to retain its absolute height.
         """
-        return torch.cat((invariant_features(S), invariant_features(self.motion.ref_state(f)), goal), -1)
+        return torch.cat(
+            (invariant_features(S), invariant_features(self.motion.ref_state(f)), goal),
+            -1,
+        )
 
     def termination(self, S, f) -> torch.Tensor:
         p, R = S[0], S[1]
@@ -161,15 +210,21 @@ class MDP:
         bp = self.kin.forward(p, R, v, w, q, qd)[0]
         dR = yaw_mat(matmul3(R, rR.transpose(-1, -2)))
         anchor = torch.cat((p[..., :2], rp[..., 2:3]), -1)
-        ref_bp = anchor.unsqueeze(-2) + matvec3(dR.unsqueeze(-3), m.body_p[f] - rp.unsqueeze(-2))
+        ref_bp = anchor.unsqueeze(-2) + matvec3(
+            dR.unsqueeze(-3), m.body_p[f] - rp.unsqueeze(-2)
+        )
         e_body = matvec3(Rt.unsqueeze(-3), ref_bp - bp).flatten(-2)
         e_root = matvec3(Rt, rp - p)
         rel = mat_to_6d(matmul3(R.transpose(-1, -2), rR))
-        return torch.cat((invariant_features(S), m.q[f] - q, e_body, e_root, rel, xi), -1)
+        return torch.cat(
+            (invariant_features(S), m.q[f] - q, e_body, e_root, rel, xi), -1
+        )
 
 
 CRITIC_EXTRA = 29 + 14 * 3 + 3 + 6 + XI_DIM
 
 
 def normalize_xi(xi: torch.Tensor) -> torch.Tensor:
-    return torch.cat(((xi[..., :1] - 0.75) / 0.45, xi[..., 1:30] / 0.01, xi[..., 30:33] / 0.05), -1)
+    return torch.cat(
+        ((xi[..., :1] - 0.75) / 0.45, xi[..., 1:-3] / 0.01, xi[..., -3:] / 0.05), -1
+    )

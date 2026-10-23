@@ -6,7 +6,7 @@ RUN=${1:?Usage: CUDA_VISIBLE_DEVICES=GPU-uuid ./run_train.sh RUN [arguments...]}
 shift
 : "${CUDA_VISIBLE_DEVICES:?Select exactly one available GPU by UUID before launching}"
 if [[ "$CUDA_VISIBLE_DEVICES" == *,* ]]; then
-  echo 'The controlled LAFAN1 experiment requires one GPU.' >&2
+  echo 'Training requires one explicitly selected GPU.' >&2
   exit 2
 fi
 RUN_ROOT=${RUN_ROOT:-"$PWD/logs"}

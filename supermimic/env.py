@@ -17,7 +17,7 @@ from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 
 from .mdp import MAX_STEP_REWARD, MDP, flatten_state
 from .motion import CONTROL_DT, MotionLib
-from .robot import G1_JOINT_NAMES, action_scale, make_g1_cfg
+from .robot import action_scale, get_robot, make_robot_cfg
 from .rotations import mat_to_quat, matmul3, matvec3, quat_to_mat, so3_exp
 
 
@@ -25,12 +25,19 @@ from .rotations import mat_to_quat, matmul3, matvec3, quat_to_mat, so3_exp
 class TrackingSimCfg:
     device: str = "cuda:0"
     decimation: int = 4
-    torch_stream: torch.cuda.Stream | None = field(default=None, repr=False, compare=False)
+    torch_stream: torch.cuda.Stream | None = field(
+        default=None, repr=False, compare=False
+    )
     warp_stream: wp.Stream | None = field(default=None, repr=False, compare=False)
-    physics: SimulationCfg = field(default_factory=lambda: SimulationCfg(
-        njmax=500, nconmax=128,
-        mujoco=MujocoCfg(timestep=CONTROL_DT / 4, integrator="implicitfast", cone="pyramidal"),
-    ))
+    physics: SimulationCfg = field(
+        default_factory=lambda: SimulationCfg(
+            njmax=500,
+            nconmax=128,
+            mujoco=MujocoCfg(
+                timestep=CONTROL_DT / 4, integrator="implicitfast", cone="pyramidal"
+            ),
+        )
+    )
 
 
 def make_sim(device: str, args=None) -> TrackingSimCfg:
@@ -54,26 +61,51 @@ def make_sim(device: str, args=None) -> TrackingSimCfg:
 
 
 def _ground(spec: mujoco.MjSpec) -> None:
-    spec.worldbody.add_geom(name="ground", type=mujoco.mjtGeom.mjGEOM_PLANE,
-                            size=[0, 0, 0.1], friction=[1.0, 0.005, 0.0001],
-                            rgba=[0.25, 0.28, 0.32, 1.0])
+    spec.worldbody.add_geom(
+        name="ground",
+        type=mujoco.mjtGeom.mjGEOM_PLANE,
+        size=[0, 0, 0.1],
+        friction=[1.0, 0.005, 0.0001],
+        rgba=[0.25, 0.28, 0.32, 1.0],
+    )
 
 
-def build_scene(cfg: TrackingSimCfg, num_envs: int):
+def build_scene(cfg: TrackingSimCfg, num_envs: int, robot_spec=None, terrain=None):
     # make_sim must run before the caller's CUDA allocations; switching streams
     # here would leave those allocations with unrecorded cross-stream lifetimes.
     if torch.device(cfg.device).type == "cuda":
         if cfg.torch_stream is None or cfg.warp_stream is None:
-            raise RuntimeError("Create CUDA configuration with make_sim before allocating learner tensors")
-        if torch.cuda.current_stream(cfg.device).cuda_stream != cfg.torch_stream.cuda_stream:
-            raise RuntimeError("Torch current stream changed after shared simulator execution setup")
+            raise RuntimeError(
+                "Create CUDA configuration with make_sim before allocating learner tensors"
+            )
+        if (
+            torch.cuda.current_stream(cfg.device).cuda_stream
+            != cfg.torch_stream.cuda_stream
+        ):
+            raise RuntimeError(
+                "Torch current stream changed after shared simulator execution setup"
+            )
         if wp.get_stream(cfg.device).cuda_stream != cfg.warp_stream.cuda_stream:
-            raise RuntimeError("Warp current stream changed after shared simulator execution setup")
+            raise RuntimeError(
+                "Warp current stream changed after shared simulator execution setup"
+            )
     if abs(cfg.physics.mujoco.timestep * cfg.decimation - CONTROL_DT) > 1e-12:
-        raise ValueError("Physics decimation must equal the 50 Hz motion/control period")
-    scene = Scene(SceneCfg(num_envs=num_envs, env_spacing=0.0,
-                           entities={"robot": make_g1_cfg()}, spec_fn=_ground), device=cfg.device)
-    sim = Simulation(num_envs=num_envs, cfg=cfg.physics, model=scene.compile(), device=cfg.device)
+        raise ValueError(
+            "Physics decimation must equal the 50 Hz motion/control period"
+        )
+    robot_spec = get_robot("g1") if robot_spec is None else robot_spec
+    scene = Scene(
+        SceneCfg(
+            num_envs=num_envs,
+            env_spacing=0.0,
+            entities={"robot": make_robot_cfg(robot_spec)},
+            spec_fn=_ground if terrain is None else terrain.add_to_spec,
+        ),
+        device=cfg.device,
+    )
+    sim = Simulation(
+        num_envs=num_envs, cfg=cfg.physics, model=scene.compile(), device=cfg.device
+    )
     scene.initialize(sim.mj_model, sim.model, sim.data)
     sim.reset()
     return scene, sim
@@ -85,18 +117,40 @@ class TrackingSim:
     Uses native mjlab entities and four MuJoCo-Warp substeps per control step.
     """
 
-    def __init__(self, sim_cfg, num_envs: int, motion: MotionLib, mdp: MDP, gamma: float = 0.99, eval_mode: bool = False,
-                 max_episode_steps: int | None = None, reset_noise: bool = False):
-        if not 0 < gamma < 1 or (max_episode_steps is not None and max_episode_steps < 1):
-            raise ValueError("Require 0 < gamma < 1 and a positive optional episode horizon")
+    def __init__(
+        self,
+        sim_cfg,
+        num_envs: int,
+        motion: MotionLib,
+        mdp: MDP,
+        gamma: float = 0.99,
+        eval_mode: bool = False,
+        max_episode_steps: int | None = None,
+        reset_noise: bool = False,
+    ):
+        if not 0 < gamma < 1 or (
+            max_episode_steps is not None and max_episode_steps < 1
+        ):
+            raise ValueError(
+                "Require 0 < gamma < 1 and a positive optional episode horizon"
+            )
         self.device = sim_cfg.device
         self.cfg = sim_cfg
-        self.scene, self.sim = build_scene(sim_cfg, num_envs)
+        self.robot_spec = getattr(motion, "robot", None) or get_robot("g1")
+        self.num_joints = len(self.robot_spec.joint_names)
+        self.terrain = getattr(motion, "terrain", None)
+        self.scene, self.sim = build_scene(
+            sim_cfg, num_envs, self.robot_spec, self.terrain
+        )
         self.robot = self.scene["robot"]
         names = list(self.robot.joint_names)
-        if len(names) != 29 or set(names) != set(G1_JOINT_NAMES):
-            raise ValueError(f"Unexpected G1 model joints: {names}")
-        self.joint_ids = torch.tensor([names.index(n) for n in G1_JOINT_NAMES], device=self.device)
+        if len(names) != self.num_joints or set(names) != set(
+            self.robot_spec.joint_names
+        ):
+            raise ValueError(f"Unexpected robot model joints: {names}")
+        self.joint_ids = torch.tensor(
+            [names.index(n) for n in self.robot_spec.joint_names], device=self.device
+        )
         self.N = num_envs
         self.motion, self.mdp, self.gamma = motion, mdp, gamma
         self.eval_mode = eval_mode
@@ -104,31 +158,53 @@ class TrackingSim:
         self.reset_noise = reset_noise and not eval_mode
         dev = self.device
         self.default_q = self.robot.data.default_joint_pos[0, self.joint_ids].clone()
-        self.alpha = torch.tensor([action_scale(n) for n in G1_JOINT_NAMES], device=dev)
-        self.torso_id = int(self.robot.indexing.body_ids[self.robot.body_names.index("torso_link")])
-        self.xi = torch.zeros(self.N, 33, device=dev)
+        self.alpha = torch.tensor(
+            [action_scale(n, self.robot_spec) for n in self.robot_spec.joint_names],
+            device=dev,
+        )
+        self.torso_id = int(
+            self.robot.indexing.body_ids[
+                self.robot.body_names.index(self.robot_spec.torso_body)
+            ]
+        )
+        self.xi = torch.zeros(self.N, self.num_joints + 4, device=dev)
         # Domain parameters and all dependent constants must have a world axis.
         # These derived fields are mjlab 1.6.0's set_const dependency closure.
-        self._dr_fields = ("geom_friction", "body_ipos", "body_subtreemass", "dof_invweight0",
-                           "body_invweight0", "tendon_length0", "tendon_invweight0", "actuator_acc0")
+        self._dr_fields = (
+            "geom_friction",
+            "body_ipos",
+            "body_subtreemass",
+            "dof_invweight0",
+            "body_invweight0",
+            "tendon_length0",
+            "tendon_invweight0",
+            "actuator_acc0",
+        )
         self.sim.expand_model_fields(self._dr_fields)
-        self._default_com = self.sim.get_default_field("body_ipos")[self.torso_id].clone()
+        self._default_com = self.sim.get_default_field("body_ipos")[
+            self.torso_id
+        ].clone()
         # Empty MuJoCo state components carry no information (e.g. no mocap
         # bodies or actuator activations in this G1). Do not ask Torch to wrap
         # zero-sized vector-valued Warp arrays.
-        self._integration_fields = tuple(name for name in self._INTEGRATION_FIELDS
-                                         if getattr(self.sim.wp_data, name).size > 0)
+        self._integration_fields = tuple(
+            name
+            for name in self._INTEGRATION_FIELDS
+            if getattr(self.sim.wp_data, name).size > 0
+        )
 
         # ---- episode bookkeeping ----
         self.f = torch.zeros(self.N, dtype=torch.long, device=dev)
         self.ep_step = torch.zeros(self.N, dtype=torch.long, device=dev)
-        self.a_prev = torch.zeros(self.N, 29, device=dev)
+        self.a_prev = torch.zeros(self.N, self.num_joints, device=dev)
         self.start_bin = torch.zeros(self.N, dtype=torch.long, device=dev)
         self.ep_disc_ret = torch.zeros(self.N, device=dev)
         self.ep_ret = torch.zeros(self.N, device=dev)
         self.G_max = MAX_STEP_REWARD / (1 - gamma)
         self.bin_G = torch.full((motion.num_bins,), 0.0, device=dev)
-        self.bin_w_avg = torch.full((motion.num_bins,), 1.0 / motion.num_bins, device=dev)
+        self.bin_w_avg = torch.full(
+            (motion.num_bins,), 1.0 / motion.num_bins, device=dev
+        )
         self.bin_count = torch.zeros(motion.num_bins, dtype=torch.long, device=dev)
         self.sampling_updates = torch.zeros((), dtype=torch.long, device=dev)
         self.ep_horizon = torch.ones(self.N, dtype=torch.long, device=dev)
@@ -144,16 +220,22 @@ class TrackingSim:
             self.xi[env_ids, 0] = 1.0
         else:
             self.xi[env_ids, 0] = torch.empty(n, device=self.device).uniform_(0.3, 1.2)
-            self.xi[env_ids, 1:30] = torch.empty(n, 29, device=self.device).uniform_(-0.01, 0.01)
+            self.xi[env_ids, 1 : 1 + self.num_joints] = torch.empty(
+                n, self.num_joints, device=self.device
+            ).uniform_(-0.01, 0.01)
             widths = torch.tensor([0.025, 0.05, 0.05], device=self.device)
-            self.xi[env_ids, 30:33] = (2 * torch.rand(n, 3, device=self.device) - 1) * widths
+            self.xi[env_ids, -3:] = (
+                2 * torch.rand(n, 3, device=self.device) - 1
+            ) * widths
         self._apply_context(env_ids)
 
     def _apply_context(self, env_ids):
         # Both surfaces get the same sliding coefficient, so MuJoCo's contact
         # max rule yields exactly xi. Preserve source torsional/rolling friction.
         self.sim.model.geom_friction[env_ids, :, 0] = self.xi[env_ids, 0:1]
-        self.sim.model.body_ipos[env_ids, self.torso_id] = self._default_com + self.xi[env_ids, 30:33]
+        self.sim.model.body_ipos[env_ids, self.torso_id] = (
+            self._default_com + self.xi[env_ids, -3:]
+        )
         self.sim.recompute_constants(RecomputeLevel.set_const)
 
     def state(self):
@@ -167,8 +249,14 @@ class TrackingSim:
         R = quat_to_mat(root_q[:, 3:7])  # mjlab/MuJoCo use wxyz.
         w = matvec3(R, root_v[:, 3:6])
         d = self.robot.data
-        return (p, R, root_v[:, :3], w, d.joint_pos[:, self.joint_ids].clone(),
-                d.joint_vel[:, self.joint_ids].clone())
+        return (
+            p,
+            R,
+            root_v[:, :3],
+            w,
+            d.joint_pos[:, self.joint_ids].clone(),
+            d.joint_vel[:, self.joint_ids].clone(),
+        )
 
     # ------------------------------------------------------------------ reset
     def sample_frames(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -176,10 +264,14 @@ class TrackingSim:
         soft = torch.softmax(-25.0 * self.bin_G / self.G_max, 0)
         self.sampling_updates += 1
         self.bin_w_avg += (soft - self.bin_w_avg) / self.sampling_updates
-        probs = 0.5 / m.num_bins + 0.4 * soft + 0.1 * self.bin_w_avg / self.bin_w_avg.sum()
+        probs = (
+            0.5 / m.num_bins + 0.4 * soft + 0.1 * self.bin_w_avg / self.bin_w_avg.sum()
+        )
         bins = torch.multinomial(probs, n, replacement=True)
         start = m.bin_start[bins]
-        end = torch.minimum(start + 50, m.clip_end[m.bin_clip[bins]])  # keep >= 1 step before the clip end
+        end = torch.minimum(
+            start + 50, m.clip_end[m.bin_clip[bins]]
+        )  # keep >= 1 step before the clip end
         f = start + (torch.rand(n, device=self.device) * (end - start).float()).long()
         return f, bins
 
@@ -195,7 +287,9 @@ class TrackingSim:
         m = self.motion
         remaining = m.clip_end[m.clip_id[frames]] - frames
         if torch.any(remaining < 1):
-            raise ValueError("Reset frame must precede the final frame of its motion clip")
+            raise ValueError(
+                "Reset frame must precede the final frame of its motion clip"
+            )
         p, R, v, w, q, qd = (x.clone() for x in m.ref_state(frames))
         if self.reset_noise:
             p = p + torch.stack(
@@ -216,19 +310,41 @@ class TrackingSim:
         self.sim.reset(env_ids)
         self.scene.reset(env_ids)
         self._randomize_context(env_ids)
+        if self.terrain is not None:
+            terrain_ids = self.motion.terrain_ids[self.motion.clip_id[frames]]
+            self.scene.env_origins[env_ids] = self.terrain.world_origins[terrain_ids]
         pose = torch.cat((p + self.scene.env_origins[env_ids], quat), -1)
         self.robot.write_root_link_pose_to_sim(pose, env_ids=env_ids)
-        self.robot.write_root_link_velocity_to_sim(torch.cat((v, w), -1), env_ids=env_ids)
-        self.robot.write_joint_state_to_sim(q, qd, joint_ids=self.joint_ids, env_ids=env_ids)
-        self.robot.set_joint_position_target(q, joint_ids=self.joint_ids, env_ids=env_ids)
+        self.robot.write_root_link_velocity_to_sim(
+            torch.cat((v, w), -1), env_ids=env_ids
+        )
+        self.robot.write_joint_state_to_sim(
+            q, qd, joint_ids=self.joint_ids, env_ids=env_ids
+        )
+        self.robot.set_joint_position_target(
+            q, joint_ids=self.joint_ids, env_ids=env_ids
+        )
         self.f[env_ids] = frames
-        self.ep_horizon[env_ids] = (remaining if self.max_episode_steps is None
-                                    else remaining.clamp(max=self.max_episode_steps))
+        self.ep_horizon[env_ids] = (
+            remaining
+            if self.max_episode_steps is None
+            else remaining.clamp(max=self.max_episode_steps)
+        )
         self.ep_step[env_ids] = 0
         self.a_prev[env_ids] = 0.0
         self.start_bin[env_ids] = bins
         self.ep_disc_ret[env_ids] = 0.0
         self.ep_ret[env_ids] = 0.0
+
+    def depth(self, S=None, frames=None):
+        """Terrain-only range camera, rendered from the same static collision geometry."""
+        if self.terrain is None:
+            raise ValueError("This environment has no terrain camera")
+        if S is None:
+            S = self.state()
+        frames = self.f if frames is None else frames
+        ids = self.motion.terrain_ids[self.motion.clip_id[frames]]
+        return self.terrain.render_depth(S[0], S[1], ids)
 
     def refresh(self):
         """Propagate written states so that ``state()`` is consistent after a reset."""
@@ -238,11 +354,12 @@ class TrackingSim:
     # ------------------------------------------------------------------ step
     def step(self, a: torch.Tensor) -> dict:
         S = self.state()
+        depth = self.depth(S) if self.terrain is not None else None
         f = self.f.clone()
         xi = self.xi.clone()
         a_prev = self.a_prev.clone()
         ep_step = self.ep_step.clone()
-        target = self.default_q + xi[:, 1:30] + self.alpha * a
+        target = self.default_q + xi[:, 1 : 1 + self.num_joints] + self.alpha * a
         self.robot.set_joint_position_target(target, joint_ids=self.joint_ids)
         for _ in range(self.cfg.decimation):
             self.scene.write_data_to_sim()
@@ -261,6 +378,9 @@ class TrackingSim:
             "s": flatten_state(S), "a": a.clone(), "a_prev": a_prev, "f": f, "s1": flatten_state(S1), "r": r,
             "term": term, "terminated": term, "done": done, "ep_step": ep_step, "xi": xi, "terms": terms,
         }  # fmt: skip
+        if self.terrain is not None:
+            out["depth"] = depth
+            out["depth1"] = self.depth(S1, f)
         # bookkeeping
         self.ep_disc_ret += (self.gamma ** ep_step.float()) * r
         self.ep_ret += r
@@ -284,25 +404,54 @@ class TrackingSim:
             b = self.start_bin[ids]
             unique, inverse = b.unique(return_inverse=True)
             count = torch.bincount(inverse, minlength=len(unique))
-            total = torch.zeros(len(unique), device=self.device).scatter_add_(0, inverse, G)
+            total = torch.zeros(len(unique), device=self.device).scatter_add_(
+                0, inverse, G
+            )
             previous = self.bin_count[unique]
-            self.bin_G[unique] = (self.bin_G[unique] * previous + total) / (previous + count)
+            self.bin_G[unique] = (self.bin_G[unique] * previous + total) / (
+                previous + count
+            )
             self.bin_count[unique] += count
             out["ep_len"] = T
-            out["ep_ret_norm"] = self.ep_ret[ids] / (self.ep_horizon[ids] * MAX_STEP_REWARD)
+            out["ep_ret_norm"] = self.ep_ret[ids] / (
+                self.ep_horizon[ids] * MAX_STEP_REWARD
+            )
             self.reset(ids)
         return out
 
     # MuJoCo's integration state; native position actuators have no private
     # recurrent/delay state. RNG state belongs to the trainer checkpoint.
     _INTEGRATION_FIELDS = (
-        "time", "qpos", "qvel", "act", "history", "tree_asleep", "qacc_warmstart", "ctrl",
-        "qfrc_applied", "xfrc_applied", "eq_active", "mocap_pos", "mocap_quat", "userdata",
+        "time",
+        "qpos",
+        "qvel",
+        "act",
+        "history",
+        "tree_asleep",
+        "qacc_warmstart",
+        "ctrl",
+        "qfrc_applied",
+        "xfrc_applied",
+        "eq_active",
+        "mocap_pos",
+        "mocap_quat",
+        "userdata",
     )
     _EPISODE_FIELDS = (
-        "xi", "f", "ep_step", "a_prev", "start_bin", "ep_disc_ret", "ep_ret",
-        "bin_G", "bin_w_avg", "bin_count", "sampling_updates", "ep_horizon",
-        "done_eval", "failed_eval",
+        "xi",
+        "f",
+        "ep_step",
+        "a_prev",
+        "start_bin",
+        "ep_disc_ret",
+        "ep_ret",
+        "bin_G",
+        "bin_w_avg",
+        "bin_count",
+        "sampling_updates",
+        "ep_horizon",
+        "done_eval",
+        "failed_eval",
     )
     _TARGET_FIELDS = ("joint_pos_target", "joint_vel_target", "joint_effort_target")
 
@@ -311,26 +460,46 @@ class TrackingSim:
         return {
             "version": 1,
             "num_envs": self.N,
-            "joint_names": list(G1_JOINT_NAMES),
+            "joint_names": list(self.robot_spec.joint_names),
             "gamma": self.gamma,
             "max_episode_steps": self.max_episode_steps,
             "reset_noise": self.reset_noise,
             "eval_mode": self.eval_mode,
-            "simulation": {name: getattr(self.sim.data, name).clone() for name in self._integration_fields},
-            "episodes": {name: getattr(self, name).clone() for name in self._EPISODE_FIELDS},
-            "targets": {name: getattr(self.robot.data, name).clone() for name in self._TARGET_FIELDS},
+            "simulation": {
+                name: getattr(self.sim.data, name).clone()
+                for name in self._integration_fields
+            },
+            "episodes": {
+                name: getattr(self, name).clone() for name in self._EPISODE_FIELDS
+            },
+            "targets": {
+                name: getattr(self.robot.data, name).clone()
+                for name in self._TARGET_FIELDS
+            },
         }
 
     def load_state_dict(self, state: dict) -> None:
         """Restore a matching environment; fail on incompatible checkpoint state."""
-        expected = {"version": 1, "num_envs": self.N, "joint_names": list(G1_JOINT_NAMES),
-                    "gamma": self.gamma, "max_episode_steps": self.max_episode_steps,
-                    "reset_noise": self.reset_noise, "eval_mode": self.eval_mode}
+        expected = {
+            "version": 1,
+            "num_envs": self.N,
+            "joint_names": list(self.robot_spec.joint_names),
+            "gamma": self.gamma,
+            "max_episode_steps": self.max_episode_steps,
+            "reset_noise": self.reset_noise,
+            "eval_mode": self.eval_mode,
+        }
         for name, value in expected.items():
             if state[name] != value:
-                raise ValueError(f"Environment checkpoint {name} mismatch: {state[name]!r} != {value!r}")
+                raise ValueError(
+                    f"Environment checkpoint {name} mismatch: {state[name]!r} != {value!r}"
+                )
         for name in self._EPISODE_FIELDS:
             getattr(self, name).copy_(state["episodes"][name])
+        if self.terrain is not None:
+            self.scene.env_origins[:] = self.terrain.world_origins[
+                self.motion.terrain_ids[self.motion.clip_id[self.f]]
+            ]
         self._apply_context(torch.arange(self.N, device=self.device))
         for name in self._integration_fields:
             getattr(self.sim.data, name).copy_(state["simulation"][name])

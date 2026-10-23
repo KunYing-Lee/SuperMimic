@@ -10,29 +10,47 @@ import numpy as np
 import torch
 
 from .kinematics import G1Kinematics
-from .rotations import matmul3, matvec3, mat_to_6d, quat_slerp, quat_to_mat, so3_log
+from .rotations import mat_to_6d, matmul3, matvec3, quat_slerp, quat_to_mat, so3_log
 
 CONTROL_DT = 0.02
 BIN_FRAMES = 50  # 1 s bins for return-based reset sampling
 
 
 class MotionLib:
-    def __init__(self, files: list[str], kin: G1Kinematics, device: str, src_fps: float | dict[str, float] = 30.0):
+    def __init__(
+        self,
+        files: list[str],
+        kin: G1Kinematics,
+        device: str,
+        src_fps: float | dict[str, float] = 30.0,
+    ):
         if not files:
             raise ValueError("Motion directory contains no CSV clips")
         self.files = list(files)
         self.device = device
+        self.robot = getattr(kin, "robot", None)
+        self.num_joints = len(kin.q_lo)
+        self.goal_frame_dim = 15 + 2 * self.num_joints
         self.names = [os.path.splitext(os.path.basename(f))[0] for f in files]
         ps, qs, js = [], [], []
         lens = []
         for f in files:
-            fps = float(src_fps[os.path.basename(f)] if isinstance(src_fps, dict) else src_fps)
+            fps = float(
+                src_fps[os.path.basename(f)] if isinstance(src_fps, dict) else src_fps
+            )
             if not np.isfinite(fps) or fps <= 0:
                 raise ValueError(f"Invalid source frame rate for {f}: {fps}")
             raw = torch.tensor(np.loadtxt(f, delimiter=","), dtype=torch.float32)
-            if raw.ndim != 2 or raw.shape[0] < 2 or raw.shape[1] != 36 or not torch.isfinite(raw).all():
-                raise ValueError(f"Expected finite T x 36 motion CSV with at least two frames: {f}")
-            p, q_xyzw, j = raw[:, :3], raw[:, 3:7], raw[:, 7:36]
+            if (
+                raw.ndim != 2
+                or raw.shape[0] < 2
+                or raw.shape[1] != 7 + self.num_joints
+                or not torch.isfinite(raw).all()
+            ):
+                raise ValueError(
+                    f"Expected finite T x {7 + self.num_joints} motion CSV with at least two frames: {f}"
+                )
+            p, q_xyzw, j = raw[:, :3], raw[:, 3:7], raw[:, 7:]
             quat = torch.cat((q_xyzw[:, 3:4], q_xyzw[:, :3]), -1)
             # resample to 50 Hz
             T_src = raw.shape[0]
@@ -47,10 +65,22 @@ class MotionLib:
             ps.append(p), qs.append(quat), js.append(j)
             lens.append(n)
         self.clip_len = torch.tensor(lens, device=device)
-        self.clip_start = torch.cumsum(torch.cat((torch.zeros(1, dtype=torch.long), torch.tensor(lens[:-1], dtype=torch.long))), 0).to(device)  # dtype: one clip gives an empty (float) tensor
-        self.clip_end = self.clip_start + self.clip_len - 1  # last valid frame (inclusive)
+        self.clip_start = torch.cumsum(
+            torch.cat(
+                (
+                    torch.zeros(1, dtype=torch.long),
+                    torch.tensor(lens[:-1], dtype=torch.long),
+                )
+            ),
+            0,
+        ).to(device)  # dtype: one clip gives an empty (float) tensor
+        self.clip_end = (
+            self.clip_start + self.clip_len - 1
+        )  # last valid frame (inclusive)
         self.num_frames = int(sum(lens))
-        self.clip_id = torch.cat([torch.full((n,), i, dtype=torch.long) for i, n in enumerate(lens)]).to(device)
+        self.clip_id = torch.cat(
+            [torch.full((n,), i, dtype=torch.long) for i, n in enumerate(lens)]
+        ).to(device)
 
         root_p, root_R, root_v, root_w, jq, jqd = [], [], [], [], [], []
         for p, quat, j in zip(ps, qs, js):
@@ -59,25 +89,58 @@ class MotionLib:
             qd = _gradient(j, CONTROL_DT)
             # angular velocity (world) by central differences of rotations
             w = torch.zeros_like(p)
-            w[1:-1] = so3_log(matmul3(R[2:], R[:-2].transpose(-1, -2))) / (2 * CONTROL_DT)
+            w[1:-1] = so3_log(matmul3(R[2:], R[:-2].transpose(-1, -2))) / (
+                2 * CONTROL_DT
+            )
             w[0] = so3_log(matmul3(R[1], R[0].T)) / CONTROL_DT
             w[-1] = so3_log(matmul3(R[-1], R[-2].T)) / CONTROL_DT
-            root_p.append(p), root_R.append(R), root_v.append(v), root_w.append(w), jq.append(j), jqd.append(qd)
+            (
+                root_p.append(p),
+                root_R.append(R),
+                root_v.append(v),
+                root_w.append(w),
+                jq.append(j),
+                jqd.append(qd),
+            )
         cat = lambda xs: torch.cat(xs).to(device)  # noqa: E731
-        self.root_p, self.root_R, self.root_v, self.root_w = cat(root_p), cat(root_R), cat(root_v), cat(root_w)
+        self.root_p, self.root_R, self.root_v, self.root_w = (
+            cat(root_p),
+            cat(root_R),
+            cat(root_v),
+            cat(root_w),
+        )
         self.q, self.qd = cat(jq), cat(jqd)
         with torch.no_grad():
             bp, bR, bv, bw = [], [], [], []
             for s in range(0, self.num_frames, 65536):
                 e = min(s + 65536, self.num_frames)
-                out = kin.forward(self.root_p[s:e], self.root_R[s:e], self.root_v[s:e], self.root_w[s:e], self.q[s:e], self.qd[s:e])
-                bp.append(out[0]), bR.append(out[1]), bv.append(out[2]), bw.append(out[3])
-            self.body_p, self.body_R, self.body_v, self.body_w = torch.cat(bp), torch.cat(bR), torch.cat(bv), torch.cat(bw)
+                out = kin.forward(
+                    self.root_p[s:e],
+                    self.root_R[s:e],
+                    self.root_v[s:e],
+                    self.root_w[s:e],
+                    self.q[s:e],
+                    self.qd[s:e],
+                )
+                (
+                    bp.append(out[0]),
+                    bR.append(out[1]),
+                    bv.append(out[2]),
+                    bw.append(out[3]),
+                )
+            self.body_p, self.body_R, self.body_v, self.body_w = (
+                torch.cat(bp),
+                torch.cat(bR),
+                torch.cat(bv),
+                torch.cat(bw),
+            )
         # per-frame static goal parts: q, qd, root velocities in the root frame
         Rt = self.root_R.transpose(-1, -2)
         self.root_v_local = matvec3(Rt, self.root_v)
         self.root_w_local = matvec3(Rt, self.root_w)
-        self.root_gz = self.root_R[:, 2, 2]  # -(projected gravity z) of the reference root: g_b = R^T (0,0,-1)
+        self.root_gz = self.root_R[
+            :, 2, 2
+        ]  # -(projected gravity z) of the reference root: g_b = R^T (0,0,-1)
         # 1 s bins
         bin_clip, bin_start = [], []
         for c in range(len(lens)):
@@ -98,6 +161,10 @@ class MotionLib:
 
     @staticmethod
     def from_dir(path: str, kin: G1Kinematics, device: str) -> MotionLib:
+        if os.path.exists(os.path.join(path, "INCOMPLETE")):
+            raise ValueError(
+                "Motion import is incomplete; validation must finish before use"
+            )
         files = sorted(glob.glob(os.path.join(path, "*.csv")))
         rates_path = os.path.join(path, "motion_rates.json")
         rates = 30.0
@@ -108,6 +175,41 @@ class MotionLib:
                 raise ValueError("motion_rates.json must cover exactly every CSV")
         result = MotionLib(files, kin, device, src_fps=rates)
         result.metadata_files = [rates_path] if os.path.exists(rates_path) else []
+        terrain_path = os.path.join(path, "terrain_manifest.json")
+        result.terrain = None
+        if os.path.exists(terrain_path):
+            from .terrain import TerrainBank
+
+            result.terrain = TerrainBank.from_manifest(terrain_path, device)
+            result.metadata_files.append(terrain_path)
+            with open(terrain_path) as stream:
+                terrain_record = json.load(stream)
+            mapping = terrain_record["motions"]
+            if set(mapping) != {os.path.basename(f) for f in files}:
+                raise ValueError("Terrain manifest must map exactly every motion CSV")
+            robot_name = getattr(result.robot, "name", "g1")
+            if terrain_record.get("robot", robot_name) not in (
+                robot_name,
+                {"k1": "booster_k1", "g1": "unitree_g1"}[robot_name],
+            ):
+                raise ValueError(
+                    "Motion terrain manifest robot differs from runtime robot"
+                )
+            ids = [
+                mapping[os.path.basename(f)]["terrain_id"]
+                if isinstance(mapping[os.path.basename(f)], dict)
+                else mapping[os.path.basename(f)]
+                for f in files
+            ]
+            if any(
+                not isinstance(i, int) or not 0 <= i < len(result.terrain.definitions)
+                for i in ids
+            ):
+                raise ValueError("Motion terrain IDs must index the terrain bank")
+            result.terrain_ids = torch.tensor(ids, device=device, dtype=torch.long)
+        provenance = os.path.join(path, "import_provenance.json")
+        if os.path.exists(provenance):
+            result.metadata_files.append(provenance)
         return result
 
     def future_frames(self, f: torch.Tensor, K: int) -> torch.Tensor:
@@ -137,7 +239,14 @@ class MotionLib:
         return feats.reshape(f.shape[0], -1)
 
     def ref_state(self, f: torch.Tensor):
-        return self.root_p[f], self.root_R[f], self.root_v[f], self.root_w[f], self.q[f], self.qd[f]
+        return (
+            self.root_p[f],
+            self.root_R[f],
+            self.root_v[f],
+            self.root_w[f],
+            self.q[f],
+            self.qd[f],
+        )
 
 
 def _gradient(x: torch.Tensor, dt: float) -> torch.Tensor:

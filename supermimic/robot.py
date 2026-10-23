@@ -1,4 +1,6 @@
-"""Unitree G1 (29 DoF) articulation, following BeyondMimic's actuator model.
+"""Named robot profiles and native mjlab implicit-PD articulations.
+
+The default Unitree G1 (29 DoF) follows BeyondMimic's actuator model.
 
 The URDF is the one the LAFAN1 motions were retargeted to (g1_29dof_rev_1_0). Joint drives are
 implicit PD with a 10 Hz natural frequency and damping ratio 2 on the reflected motor armature, and
@@ -8,9 +10,12 @@ the action scale is 0.25 * effort_limit / stiffness, as in BeyondMimic.
 from __future__ import annotations
 
 import os
+import re
+from dataclasses import dataclass
 
-
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
+)
 URDF_PATH = os.path.join(DATA_DIR, "g1_description", "g1_29dof_rev_1_0.urdf")
 MJCF_PATH = os.path.join(DATA_DIR, "g1_description", "g1_29dof.xml")
 
@@ -75,16 +80,6 @@ JOINT_MOTORS = {
 }
 
 
-def motor_of(joint_name: str) -> tuple[float, float, float]:
-    key = joint_name.replace("left_", "").replace("right_", "").replace("_joint", "")
-    return JOINT_MOTORS[key]
-
-
-def action_scale(joint_name: str) -> float:
-    effort, _, arm = motor_of(joint_name)
-    return 0.25 * effort / _kp(arm)
-
-
 DEFAULT_JOINT_POS = {
     ".*_hip_pitch_joint": -0.312,
     ".*_knee_joint": 0.669,
@@ -97,46 +92,218 @@ DEFAULT_JOINT_POS = {
 }
 
 
-def default_joint_pos_list() -> list[float]:
-    import re
+# K1's 22 physical joints, in Booster SDK/MJCF order. Motion importers must
+# reorder by the source joint_names field rather than assuming array order.
+K1_JOINT_NAMES = [
+    "Head_Yaw", "Head_Pitch",
+    "Left_Shoulder_Pitch", "Left_Shoulder_Roll", "Left_Elbow_Pitch", "Left_Elbow_Yaw",
+    "Right_Shoulder_Pitch", "Right_Shoulder_Roll", "Right_Elbow_Pitch", "Right_Elbow_Yaw",
+    "Left_Hip_Pitch", "Left_Hip_Roll", "Left_Hip_Yaw", "Left_Knee_Pitch",
+    "Left_Ankle_Pitch", "Left_Ankle_Roll",
+    "Right_Hip_Pitch", "Right_Hip_Roll", "Right_Hip_Yaw", "Right_Knee_Pitch",
+    "Right_Ankle_Pitch", "Right_Ankle_Roll",
+]  # fmt: skip
 
-    out = []
-    for name in G1_JOINT_NAMES:
-        val = 0.0
-        for pat, v in DEFAULT_JOINT_POS.items():
-            if re.fullmatch(pat, name):
-                val = v
-        out.append(val)
-    return out
+K1_TRACKED_BODIES = [
+    "Trunk", "Left_Hip_Roll", "Left_Shank", "left_foot_link",
+    "Right_Hip_Roll", "Right_Shank", "right_foot_link", "Head_2",
+    "Left_Arm_2", "Left_Arm_3", "left_hand_link",
+    "Right_Arm_2", "Right_Arm_3", "right_hand_link",
+]  # fmt: skip
+
+K1_DEFAULT_JOINT_POS = {
+    "Left_Shoulder_Roll": -1.4,
+    "Left_Elbow_Yaw": -0.4,
+    "Right_Shoulder_Roll": 1.4,
+    "Right_Elbow_Yaw": 0.4,
+    "Left_Hip_Pitch": -0.4,
+    "Left_Knee_Pitch": 0.8,
+    "Left_Ankle_Pitch": -0.4,
+    "Right_Hip_Pitch": -0.4,
+    "Right_Knee_Pitch": 0.8,
+    "Right_Ankle_Pitch": -0.4,
+}
 
 
-def make_g1_cfg():
-    """Build the G1 directly from MJCF using mjlab's implicit MuJoCo PD drives.
+@dataclass(frozen=True)
+class MotorSpec:
+    effort_limit: float
+    velocity_limit: float
+    armature: float
+    stiffness: float
+    damping: float
 
-    Joint velocity specifications remain motor metadata: MuJoCo has no hard
-    joint-velocity constraint, and clipping velocities would alter the physics.
-    Native URDF collision geometry, including self-collision, is retained.
+    @property
+    def action_scale(self) -> float:
+        return 0.25 * self.effort_limit / self.stiffness
+
+
+@dataclass(frozen=True)
+class RobotSpec:
+    name: str
+    joint_names: tuple[str, ...]
+    tracked_bodies: tuple[str, ...]
+    root_body: str
+    torso_body: str
+    mjcf_path: str
+    urdf_path: str | None
+    default_joint_positions: tuple[float, ...]
+    initial_height: float
+    motors: tuple[MotorSpec, ...]
+
+    def __post_init__(self):
+        n = len(self.joint_names)
+        if (
+            len(set(self.joint_names)) != n
+            or n != len(self.motors)
+            or n != len(self.default_joint_positions)
+        ):
+            raise ValueError(
+                "Robot joints, defaults, and motors must have equal, unique ordering"
+            )
+        if not self.tracked_bodies or self.tracked_bodies[0] != self.root_body:
+            raise ValueError("The first tracked body must be the floating root")
+
+    @property
+    def num_joints(self) -> int:
+        return len(self.joint_names)
+
+    @property
+    def default_joint_pos(self) -> dict[str, float]:
+        return dict(zip(self.joint_names, self.default_joint_positions, strict=True))
+
+    def motor(self, joint_name: str) -> MotorSpec:
+        return self.motors[self.joint_names.index(joint_name)]
+
+
+def _defaults(names, patterns):
+    return tuple(
+        next(
+            (
+                value
+                for pattern, value in reversed(list(patterns.items()))
+                if re.fullmatch(pattern, name)
+            ),
+            0.0,
+        )
+        for name in names
+    )
+
+
+def _g1_motor(name):
+    key = name.replace("left_", "").replace("right_", "").replace("_joint", "")
+    effort, velocity, arm = JOINT_MOTORS[key]
+    return MotorSpec(effort, velocity, arm, _kp(arm), _kd(arm))
+
+
+# Source: K1Lab k1_constants.py, commit 30f015a61f9583cba664b5ea65b0a1c73fba57e2.
+# Motor limits come from booster_train and gains from booster-lab, as documented
+# in that source. The serial ankle model represents two E4310 motors; these are
+# simulator actuator parameters, not a parallel-linkage hardware controller.
+_K1_MOTORS = {
+    "Knee_Pitch": MotorSpec(112.0, 12.57, 0.095625, 80.0, 4.0),
+    "Hip_Yaw": MotorSpec(38.3, 17.59, 0.0282528, 80.0, 4.0),
+    "Hip_Pitch": MotorSpec(68.0, 14.66, 0.0478125, 80.0, 4.0),
+    "Hip_Roll": MotorSpec(76.0, 12.57, 0.0339552, 80.0, 4.0),
+    "Ankle_Pitch": MotorSpec(38.3, 17.59, 0.0565056, 50.0, 2.0),
+    "Ankle_Roll": MotorSpec(38.3, 17.59, 0.0565056, 50.0, 2.0),
+    "arm": MotorSpec(14.0, 33.51, 0.001, 10.0, 1.0),
+    "head": MotorSpec(6.0, 7.85, 0.001, 4.0, 0.25),
+}
+
+
+def _k1_motor(name):
+    if name.startswith("Head_"):
+        return _K1_MOTORS["head"]
+    key = name.removeprefix("Left_").removeprefix("Right_")
+    return _K1_MOTORS["arm" if key.startswith(("Shoulder_", "Elbow_")) else key]
+
+
+G1 = RobotSpec(
+    name="g1",
+    joint_names=tuple(G1_JOINT_NAMES),
+    tracked_bodies=tuple(TRACKED_BODIES),
+    root_body="pelvis",
+    torso_body="torso_link",
+    mjcf_path=MJCF_PATH,
+    urdf_path=URDF_PATH,
+    default_joint_positions=_defaults(G1_JOINT_NAMES, DEFAULT_JOINT_POS),
+    initial_height=0.76,
+    motors=tuple(_g1_motor(name) for name in G1_JOINT_NAMES),
+)
+K1 = RobotSpec(
+    name="k1",
+    joint_names=tuple(K1_JOINT_NAMES),
+    tracked_bodies=tuple(K1_TRACKED_BODIES),
+    root_body="Trunk",
+    torso_body="Trunk",
+    mjcf_path=os.path.join(DATA_DIR, "k1_description", "k1.xml"),
+    urdf_path=None,
+    default_joint_positions=_defaults(K1_JOINT_NAMES, K1_DEFAULT_JOINT_POS),
+    initial_height=0.5125,
+    motors=tuple(_k1_motor(name) for name in K1_JOINT_NAMES),
+)
+
+
+def get_robot(robot: str | RobotSpec = "g1") -> RobotSpec:
+    if isinstance(robot, RobotSpec):
+        return robot
+    try:
+        return {"g1": G1, "k1": K1}[robot]
+    except KeyError:
+        raise ValueError(f"Unknown robot {robot!r}; choose g1 or k1") from None
+
+
+def motor_of(
+    joint_name: str, robot: str | RobotSpec = "g1"
+) -> tuple[float, float, float]:
+    motor = get_robot(robot).motor(joint_name)
+    return motor.effort_limit, motor.velocity_limit, motor.armature
+
+
+def action_scale(joint_name: str, robot: str | RobotSpec = "g1") -> float:
+    return get_robot(robot).motor(joint_name).action_scale
+
+
+def default_joint_pos_list(robot: str | RobotSpec = "g1") -> list[float]:
+    return list(get_robot(robot).default_joint_positions)
+
+
+def make_robot_cfg(robot: str | RobotSpec = "g1"):
+    """Build a native MJCF articulation with implicit MuJoCo PD drives.
+
+    Velocity limits remain motor metadata; no velocity clipping is imposed.
+    All collision masks and exclusions are retained from the source model.
     """
     import mujoco
     from mjlab.actuator import BuiltinPositionActuatorCfg
     from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 
-    actuators = []
-    for name in G1_JOINT_NAMES:
-        effort, _, arm = motor_of(name)
-        actuators.append(BuiltinPositionActuatorCfg(
+    profile = get_robot(robot)
+    actuators = tuple(
+        BuiltinPositionActuatorCfg(
             target_names_expr=(name,),
-            effort_limit=effort,
-            stiffness=_kp(arm),
-            damping=_kd(arm),
-            armature=arm,
-        ))
+            effort_limit=motor.effort_limit,
+            stiffness=motor.stiffness,
+            damping=motor.damping,
+            armature=motor.armature,
+        )
+        for name, motor in zip(profile.joint_names, profile.motors, strict=True)
+    )
     return EntityCfg(
-        spec_fn=lambda: mujoco.MjSpec.from_file(MJCF_PATH),
+        spec_fn=lambda: mujoco.MjSpec.from_file(profile.mjcf_path),
         init_state=EntityCfg.InitialStateCfg(
-            pos=(0.0, 0.0, 0.76), joint_pos=DEFAULT_JOINT_POS, joint_vel={".*": 0.0},
+            pos=(0.0, 0.0, profile.initial_height),
+            joint_pos=profile.default_joint_pos,
+            joint_vel={".*": 0.0},
         ),
         articulation=EntityArticulationInfoCfg(
-            actuators=tuple(actuators), soft_joint_pos_limit_factor=0.9,
+            actuators=actuators,
+            soft_joint_pos_limit_factor=0.9,
         ),
     )
+
+
+def make_g1_cfg():
+    """Backward-compatible entry point for existing G1 experiments."""
+    return make_robot_cfg("g1")

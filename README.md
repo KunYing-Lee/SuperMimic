@@ -2,11 +2,11 @@
 
 An independent implementation of [SuperMimic](https://arxiv.org/abs/2610.28480v1), migrated from [Chong Zhang's supermimic_vibed](https://github.com/zita-ch/supermimic_vibed) to **native mjlab 1.6.0 / MuJoCo-Warp 3.11.0**. Original history and MIT attribution are preserved.
 
-The experiment is **one G1 policy for 40 LAFAN1 motions** (264,705 source frames at 30 Hz, approximately 2.45 hours), corresponding to the paper's controlled comparison. This is not the BONES-SEED experiment or a reproduction of every interface in the paper. Historical upstream scores and videos describe a different implementation; they are retained in Git history and [MILESTONES.md](MILESTONES.md), not presented as results of this port.
+The default baseline is **one G1 policy for 40 LAFAN1 motions** (264,705 source frames at 30 Hz, approximately 2.45 hours), corresponding to the paper's controlled comparison. This is not the BONES-SEED experiment or a reproduction of every interface in the paper. Historical upstream scores and videos describe a different implementation; they are retained in Git history and [MILESTONES.md](MILESTONES.md), not presented as results of this port.
 
 ## Paper settings and disclosed choices
 
-See [the source-backed audit](docs/paper_alignment.md) for equations, settings, discrepancies, and unspecified details. The default training configuration uses:
+See [the source-backed audit](docs/paper_alignment.md) for equations, settings, discrepancies, and unspecified details. The default G1 training configuration uses:
 
 - 4,096 environments, 1,000 transitions/environment, 50 Hz control and four 5 ms physics steps.
 - 93-dimensional proprioception with 10-frame history; 10 future reference frames; 32-dimensional bounded latent.
@@ -18,7 +18,7 @@ See [the source-backed audit](docs/paper_alignment.md) for equations, settings, 
 - Per-episode friction, joint calibration and torso CoM randomization. Native self-collision physics.
 - Exact reference-state initialization, natural clip end, and eight initial collection steps to form an eight-step replay window. Additional reset perturbations and episode time limits are opt-in.
 
-The original additional reference-orientation observation, bf16, hand-shaped soft termination, dynamics-error floors, 500 world-model-only iterations, and synthetic timeout return extrapolation are removed. The goal contains future reference poses and velocities relative to the current robot root/body frame; this exposes the position/yaw errors penalized by the reward while retaining 93-dimensional proprioception. This goal convention, the learned goal-conditioned termination MLP, and the finite-horizon return estimator are disclosed implementation choices where the paper is incomplete.
+For the G1 baseline, the original additional reference-orientation observation, bf16, hand-shaped soft termination, dynamics-error floors, 500 world-model-only iterations, and synthetic timeout return extrapolation are removed. The goal contains future reference poses and velocities relative to the current robot root/body frame; this exposes the position/yaw errors penalized by the reward while retaining 93-dimensional proprioception. This goal convention, the learned goal-conditioned termination MLP, and the finite-horizon return estimator are disclosed implementation choices where the paper is incomplete.
 
 Replay storage and activation recomputation are runtime choices measured with `tools/benchmark_runtime.py`. GPU replay without recomputation was fastest on the tested RTX 5090 and fit within 32 GB; see [measurements](docs/mars5090_runtime.md). These choices preserve batch sizes, horizon, sampling distribution and gradient truncation. Full-size validation is required before long training.
 
@@ -92,3 +92,7 @@ Use [the fixed-evaluation comparison workflow](docs/evaluation_comparison.md) to
 ## License and attribution
 
 [MIT](LICENSE), original copyright © 2026 ETH Zurich, Chong Zhang. Method: Q. Liao et al., *SuperMimic: Scaling Humanoid Whole-Body Control with One Differentiable World Model*, arXiv:2610.28480. This repository is unofficial and independent of the paper's authors. Third-party data and libraries retain their own licenses.
+
+## Terrain-aware robots
+
+The `codex/terrain-aware-k1` branch adds explicit G1/K1 robot profiles and a terrain-conditioned visual world-model training path. See [architecture and validation](docs/terrain_aware_k1.md) and [K1 LAFAN data preparation](docs/k1_terrain_data.md). K1 uses a fresh policy/world model; existing G1 checkpoints are not converted across robot dimensions.

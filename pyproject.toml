@@ -7,7 +7,7 @@ license = "MIT"
 dependencies = [
   "mjlab==1.6.0", "torch==2.11.0", "mujoco==3.11.0",
   "mujoco-warp==3.11.0", "warp-lang==1.14.0",
-  "huggingface-hub>=1.0,<2", "numpy>=2,<3", "matplotlib>=3.10,<4", "pillow>=11,<13",
+  "scipy>=1.14,<2", "huggingface-hub>=1.0,<2", "numpy>=2,<3", "matplotlib>=3.10,<4", "pillow>=11,<13",
 ]
 
 [dependency-groups]
