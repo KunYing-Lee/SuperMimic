@@ -2,7 +2,7 @@
 .DS_Store
 # caches and build output
 .cache/
-.venv/
+.venv
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
