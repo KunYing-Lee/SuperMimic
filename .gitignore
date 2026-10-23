@@ -1,3 +1,5 @@
+# macOS metadata
+.DS_Store
 # caches and build output
 .cache/
 .venv/
