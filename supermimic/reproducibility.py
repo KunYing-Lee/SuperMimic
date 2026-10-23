@@ -29,7 +29,7 @@ def manifest(repo: str, args, motion, robot_path: str) -> dict:
     root = Path(repo)
     source = {str(p.relative_to(root)): sha256(p) for p in sorted((root / "supermimic").glob("*.py"))}
     robot_assets = [p for p in Path(robot_path).parent.rglob("*") if p.is_file() and p.suffix.lower() in {".xml", ".urdf", ".stl", ".obj", ".png", ".jpg"}]
-    assets = {str(Path(p).resolve()): sha256(Path(p)) for p in [*motion.files, *robot_assets]}
+    assets = {str(Path(p).resolve()): sha256(Path(p)) for p in [*motion.files, *getattr(motion, "metadata_files", []), *robot_assets]}
     versions = {}
     for package in ("torch", "mjlab", "mujoco", "mujoco-warp", "warp-lang", "numpy"):
         try:

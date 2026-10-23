@@ -27,25 +27,27 @@ def main():
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
     files = sorted(args.motion_dir.glob("*.csv"))
+    rates_file = args.motion_dir / "motion_rates.json"
+    rates = json.loads(rates_file.read_text()) if rates_file.exists() else 30.0
     if not files:
         raise ValueError("No motion files found")
     sim_cfg = make_sim(args.device)
     kin = G1Kinematics(args.device)
     first_frames = []
-    # The first three source frames retain the true first-frame state and its
-    # one-sided velocity. Trimming avoids allocating full-library FK tensors
+    # The first nine source frames retain the true first-frame state and its
+    # one-sided velocity. This also covers 120 Hz inputs at 50 Hz control. Trimming avoids allocating full-library FK tensors
     # for a test whose acceptance target is the actual reset frame of each clip.
     with tempfile.TemporaryDirectory(prefix="supermimic-dataset-reset-") as tmp:
         trimmed = []
         for path in files:
-            raw = np.loadtxt(path, delimiter=",", max_rows=3, dtype=np.float32)
+            raw = np.loadtxt(path, delimiter=",", max_rows=9, dtype=np.float32)
             if raw.ndim != 2 or raw.shape[1] != 36 or len(raw) < 3:
                 raise ValueError(f"Invalid source motion: {path}")
             first_frames.append(raw[0])
             dest = Path(tmp) / path.name
             np.savetxt(dest, raw, delimiter=",")
             trimmed.append(str(dest))
-        motion = MotionLib(trimmed, kin, args.device)
+        motion = MotionLib(trimmed, kin, args.device, src_fps=rates)
     mdp = MDP(kin, motion, torch.tensor(default_joint_pos_list(), device=args.device))
     env = TrackingSim(sim_cfg, len(files), motion, mdp, eval_mode=True)
     ids = torch.arange(len(files), device=args.device)

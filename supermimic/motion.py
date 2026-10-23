@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import glob
+import json
 import os
 
 import numpy as np
@@ -16,7 +17,7 @@ BIN_FRAMES = 50  # 1 s bins for return-based reset sampling
 
 
 class MotionLib:
-    def __init__(self, files: list[str], kin: G1Kinematics, device: str, src_fps: float = 30.0):
+    def __init__(self, files: list[str], kin: G1Kinematics, device: str, src_fps: float | dict[str, float] = 30.0):
         if not files:
             raise ValueError("Motion directory contains no CSV clips")
         self.files = list(files)
@@ -25,6 +26,9 @@ class MotionLib:
         ps, qs, js = [], [], []
         lens = []
         for f in files:
+            fps = float(src_fps[os.path.basename(f)] if isinstance(src_fps, dict) else src_fps)
+            if not np.isfinite(fps) or fps <= 0:
+                raise ValueError(f"Invalid source frame rate for {f}: {fps}")
             raw = torch.tensor(np.loadtxt(f, delimiter=","), dtype=torch.float32)
             if raw.ndim != 2 or raw.shape[0] < 2 or raw.shape[1] != 36 or not torch.isfinite(raw).all():
                 raise ValueError(f"Expected finite T x 36 motion CSV with at least two frames: {f}")
@@ -32,9 +36,9 @@ class MotionLib:
             quat = torch.cat((q_xyzw[:, 3:4], q_xyzw[:, :3]), -1)
             # resample to 50 Hz
             T_src = raw.shape[0]
-            dur = (T_src - 1) / src_fps
+            dur = (T_src - 1) / fps
             n = int(np.floor(dur / CONTROL_DT)) + 1
-            t = torch.arange(n, dtype=torch.float32) * CONTROL_DT * src_fps
+            t = torch.arange(n, dtype=torch.float32) * CONTROL_DT * fps
             i0 = torch.clamp(t.floor().long(), max=T_src - 2)
             a = (t - i0.float()).clamp(0, 1)
             p = p[i0] * (1 - a[:, None]) + p[i0 + 1] * a[:, None]
@@ -95,7 +99,16 @@ class MotionLib:
     @staticmethod
     def from_dir(path: str, kin: G1Kinematics, device: str) -> MotionLib:
         files = sorted(glob.glob(os.path.join(path, "*.csv")))
-        return MotionLib(files, kin, device)
+        rates_path = os.path.join(path, "motion_rates.json")
+        rates = 30.0
+        if os.path.exists(rates_path):
+            with open(rates_path) as stream:
+                rates = json.load(stream)
+            if set(rates) != {os.path.basename(f) for f in files}:
+                raise ValueError("motion_rates.json must cover exactly every CSV")
+        result = MotionLib(files, kin, device, src_fps=rates)
+        result.metadata_files = [rates_path] if os.path.exists(rates_path) else []
+        return result
 
     def future_frames(self, f: torch.Tensor, K: int) -> torch.Tensor:
         """Frames f+1..f+K clamped to the clip's last frame, shape (B, K)."""
