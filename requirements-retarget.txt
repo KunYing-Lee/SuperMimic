@@ -1,0 +1,21 @@
+# Python 3.12 or 3.13; isolated from the training environment.
+# Install project-instinct/omniretargeting at the pin in the accompanying doc
+# with --no-deps after installing this file.
+numpy==2.3.5
+scipy==1.18.1
+mujoco==3.11.0
+coal==3.0.3
+trimesh==5.1.1
+open3d==0.20.0
+coacd==1.0.14
+clarabel==0.11.1
+libigl==2.6.3
+yourdfpy==0.0.60
+imageio==2.38.1
+imageio-ffmpeg==0.6.0
+PyYAML
+matplotlib
+rtree
+tqdm
+jinja2
+joblib

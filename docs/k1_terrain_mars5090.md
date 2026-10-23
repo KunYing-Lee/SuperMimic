@@ -1,5 +1,20 @@
 # K1 terrain pilot on Mars5090
 
+## Stopped for replacement with published paired scenes
+
+The user requested stopping this pilot on 2026-10-24. PID 2494993 was stopped
+after the last logged iteration 2900. The complete iteration-2000 restart was
+copied to `stopped_002000_full.pt` and loaded independently to verify its iteration,
+replay, optimizer, simulator, RNG, and depth-model state. The process exited and
+the GPU compute-process list was empty. `stopped_for_instinct_pairs.json` records
+the stop in the run directory. This run must not be restarted automatically.
+
+The replacement uses the InstinctMJ `supermimic-v0.1` paired motion/scene release.
+It is a fresh experiment, conditional on contact-constrained K1 retargeting,
+independent collision/contact validation, reference videos, and a finite
+simulation/training validation. The former pilot is not evidence that those
+gates have passed.
+
 This is a fresh K1 experiment on `codex/terrain-aware-k1`. It does not resume the
 G1 model: the robot, observation dimensions and visual input differ. The former
 60-motion G1 run was stopped after iteration 203350; its complete iteration
