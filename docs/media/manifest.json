@@ -1,0 +1,417 @@
+[
+  {
+    "motion": "fallAndGetUp3_subject1",
+    "start": 34,
+    "end": 39,
+    "checkpoint": 104000,
+    "frames": 250,
+    "fps": 50,
+    "size": [
+      1280,
+      720
+    ],
+    "camera": {
+      "follow": "root XY only",
+      "lookat_z": 0.68,
+      "distance": 3.15,
+      "azimuth": 130,
+      "elevation": -14
+    },
+    "overlay": false,
+    "ghost": "global reference",
+    "trajectory_edited": false,
+    "checkpoint_sha256": "2b6836c53c05334b98194e433c9727026814b188b00a2aa4e8c96af1123339b4",
+    "trajectory_sha256": "b971e139bace855128a0a421e9bad55f8a8a1da18a11fc670bcc0178326d4ad2",
+    "full_motion_completed": true,
+    "full_motion_normalized_return": 0.9293,
+    "source_video": "01_getup.mp4",
+    "file": "01_getup.gif",
+    "gif_fps": 25,
+    "gif_size": [
+      480,
+      270
+    ],
+    "source_video_sha256": "9ddac15dba652bf58c60884b8e47fa0abafd7f9f6d8bad07215bc707cccfa471",
+    "sha256": "3d86e9d8a719b06fad41257fb3563a816f367225c33a6fcbc50d3b58c89b931a",
+    "gif_frames": 125,
+    "gif_duration_seconds": 5.0
+  },
+  {
+    "motion": "fallAndGetUp1_subject1",
+    "start": 4,
+    "end": 11,
+    "checkpoint": 184000,
+    "eval_motion_count": 40,
+    "frames": 350,
+    "fps": 50,
+    "size": [
+      1280,
+      720
+    ],
+    "camera": {
+      "follow": "root XY only",
+      "lookat_z": 0.68,
+      "distance": 3.15,
+      "azimuth": 130,
+      "elevation": -14
+    },
+    "overlay": false,
+    "ghost": "global reference",
+    "trajectory_edited": false,
+    "checkpoint_sha256": "aa42a1d483007ccce1b2e97ba0ccc15084a0cecdfd2b13376d85fe8777e9bbbb",
+    "trajectory_sha256": "64dbdc2dd0dbe9161e018139fad8ec84cd9aaf024610dc478fcc78280f353c62",
+    "full_motion_completed": true,
+    "full_motion_normalized_return": 0.9118,
+    "source_video": "02_fall_and_recover.mp4",
+    "file": "02_fall_and_recover.gif",
+    "gif_fps": 25,
+    "gif_size": [
+      480,
+      270
+    ],
+    "source_video_sha256": "b53621dcc329b524470b83ed89cbfee7a7ffd5ea379cf6189e56ba37c1bb1fb0",
+    "sha256": "30ec58a23155a7f39063f21ce4760bc860aed9b1237aa6b700efb1b1b4efc3b0",
+    "gif_frames": 175,
+    "gif_duration_seconds": 7.0
+  },
+  {
+    "motion": "jumps1_subject1",
+    "start": 51,
+    "end": 62,
+    "checkpoint": 184000,
+    "eval_motion_count": 40,
+    "frames": 550,
+    "fps": 50,
+    "size": [
+      1280,
+      720
+    ],
+    "camera": {
+      "follow": "root XY only",
+      "lookat_z": 0.68,
+      "distance": 3.15,
+      "azimuth": 130,
+      "elevation": -14
+    },
+    "overlay": false,
+    "ghost": "global reference",
+    "trajectory_edited": false,
+    "checkpoint_sha256": "aa42a1d483007ccce1b2e97ba0ccc15084a0cecdfd2b13376d85fe8777e9bbbb",
+    "trajectory_sha256": "64dbdc2dd0dbe9161e018139fad8ec84cd9aaf024610dc478fcc78280f353c62",
+    "full_motion_completed": true,
+    "full_motion_normalized_return": 0.9411,
+    "source_video": "03_jumps.mp4",
+    "file": "03_jumps.gif",
+    "gif_fps": 25,
+    "gif_size": [
+      480,
+      270
+    ],
+    "source_video_sha256": "60031de06c5e089b64a50b0a08e0135f8958baebf8d553960c210cbadea87be8",
+    "sha256": "d4e42185834b0f25c5baca923ad55b50a6e292697b76e76829e5693fbb20636c",
+    "gif_frames": 275,
+    "gif_duration_seconds": 11.0
+  },
+  {
+    "motion": "jumps1_subject5",
+    "start": 5,
+    "end": 16,
+    "checkpoint": 184000,
+    "eval_motion_count": 40,
+    "frames": 550,
+    "fps": 50,
+    "size": [
+      1280,
+      720
+    ],
+    "camera": {
+      "follow": "root XY only",
+      "lookat_z": 0.68,
+      "distance": 3.15,
+      "azimuth": 130,
+      "elevation": -14
+    },
+    "overlay": false,
+    "ghost": "global reference",
+    "trajectory_edited": false,
+    "checkpoint_sha256": "aa42a1d483007ccce1b2e97ba0ccc15084a0cecdfd2b13376d85fe8777e9bbbb",
+    "trajectory_sha256": "64dbdc2dd0dbe9161e018139fad8ec84cd9aaf024610dc478fcc78280f353c62",
+    "full_motion_completed": true,
+    "full_motion_normalized_return": 0.9426,
+    "source_video": "04_jumps_variant.mp4",
+    "file": "04_jumps_variant.gif",
+    "gif_fps": 25,
+    "gif_size": [
+      480,
+      270
+    ],
+    "source_video_sha256": "72a667efe38f57ed6b68f7d0cb78ff6a5116c529e2df01b85f2e3bc8eb363e0b",
+    "sha256": "48cdbc07754e0656166703273d43621fdc321d5ff94c524c762f399f8fa00bf6",
+    "gif_frames": 275,
+    "gif_duration_seconds": 11.0
+  },
+  {
+    "motion": "zz_motioncode_hdm_003_jumping_kick",
+    "start": 0,
+    "end": 5.54,
+    "checkpoint": 136000,
+    "frames": 277,
+    "fps": 50,
+    "size": [
+      1280,
+      720
+    ],
+    "camera": {
+      "follow": "root XY only",
+      "lookat_z": 0.68,
+      "distance": 3.15,
+      "azimuth": 130,
+      "elevation": -14
+    },
+    "overlay": false,
+    "ghost": "global reference",
+    "trajectory_edited": false,
+    "checkpoint_sha256": "46c3a64e76ad140ce12e181e1d1df12169ad7715fbb25602a4d39829cb2e506f",
+    "trajectory_sha256": "cb4e429f5d07a01ca2c824c83e9fb23ef5995ded393df0d0b53e7fe1e73615c3",
+    "full_motion_completed": true,
+    "full_motion_normalized_return": 0.7066,
+    "source_video": "05_jumping_kick.mp4",
+    "file": "05_jumping_kick.gif",
+    "gif_fps": 25,
+    "gif_size": [
+      480,
+      270
+    ],
+    "source_video_sha256": "1d100bccd5c42b09e94801a6272b465204ccdad96a8551f9c90bafab63a34b84",
+    "sha256": "4ee2ad901077a7a08003efa449dced59748b5aadf9952ee257b70c4ef4f8f39e",
+    "gif_frames": 139,
+    "gif_duration_seconds": 5.56
+  },
+  {
+    "motion": "zz_motioncode_hdm_004_kungfu_sequence",
+    "start": 0,
+    "end": 14.64,
+    "checkpoint": 184000,
+    "eval_motion_count": 60,
+    "frames": 732,
+    "fps": 50,
+    "size": [
+      1280,
+      720
+    ],
+    "camera": {
+      "follow": "root XY only",
+      "lookat_z": 0.68,
+      "distance": 3.15,
+      "azimuth": 130,
+      "elevation": -14
+    },
+    "overlay": false,
+    "ghost": "global reference",
+    "trajectory_edited": false,
+    "checkpoint_sha256": "aa42a1d483007ccce1b2e97ba0ccc15084a0cecdfd2b13376d85fe8777e9bbbb",
+    "trajectory_sha256": "fb0e2471c3ae9ccc2c4f48e959f4123205ab034ac451b270e2a0faa9ed992fe5",
+    "full_motion_completed": true,
+    "full_motion_normalized_return": 0.8503,
+    "source_video": "06_kungfu.mp4",
+    "file": "06_kungfu.gif",
+    "gif_fps": 25,
+    "gif_size": [
+      480,
+      270
+    ],
+    "source_video_sha256": "c6db02e574d77687b3027dca543b7e4f1b3b65c1038ada7d386fe4e4548088af",
+    "sha256": "c632c8677e7fe6a348cee28a6093e7a0d204d897c92fb014aa67ddd03d9d71f1",
+    "gif_frames": 366,
+    "gif_duration_seconds": 14.64
+  },
+  {
+    "motion": "zz_motioncode_hdm_011_hood_kicks",
+    "start": 0,
+    "end": 7.02,
+    "checkpoint": 184000,
+    "eval_motion_count": 60,
+    "frames": 351,
+    "fps": 50,
+    "size": [
+      1280,
+      720
+    ],
+    "camera": {
+      "follow": "root XY only",
+      "lookat_z": 0.68,
+      "distance": 3.15,
+      "azimuth": 130,
+      "elevation": -14
+    },
+    "overlay": false,
+    "ghost": "global reference",
+    "trajectory_edited": false,
+    "checkpoint_sha256": "aa42a1d483007ccce1b2e97ba0ccc15084a0cecdfd2b13376d85fe8777e9bbbb",
+    "trajectory_sha256": "fb0e2471c3ae9ccc2c4f48e959f4123205ab034ac451b270e2a0faa9ed992fe5",
+    "full_motion_completed": true,
+    "full_motion_normalized_return": 0.7149,
+    "source_video": "07_kicks.mp4",
+    "file": "07_kicks.gif",
+    "gif_fps": 25,
+    "gif_size": [
+      480,
+      270
+    ],
+    "source_video_sha256": "f2c88b13dc307894898541b4472928c07cfc0abde8d4eedcacd50807dba52053",
+    "sha256": "73fdfe1cee95fa58b6f01c74de3fc79b04e0567cd20a49e818279fff0a69cebe",
+    "gif_frames": 176,
+    "gif_duration_seconds": 7.04
+  },
+  {
+    "motion": "zz_motioncode_hdm_012_hammer_fist",
+    "start": 0,
+    "end": 12.32,
+    "checkpoint": 184000,
+    "eval_motion_count": 60,
+    "frames": 616,
+    "fps": 50,
+    "size": [
+      1280,
+      720
+    ],
+    "camera": {
+      "follow": "root XY only",
+      "lookat_z": 0.68,
+      "distance": 3.15,
+      "azimuth": 130,
+      "elevation": -14
+    },
+    "overlay": false,
+    "ghost": "global reference",
+    "trajectory_edited": false,
+    "checkpoint_sha256": "aa42a1d483007ccce1b2e97ba0ccc15084a0cecdfd2b13376d85fe8777e9bbbb",
+    "trajectory_sha256": "fb0e2471c3ae9ccc2c4f48e959f4123205ab034ac451b270e2a0faa9ed992fe5",
+    "full_motion_completed": true,
+    "full_motion_normalized_return": 0.7917,
+    "source_video": "08_hammer_fist.mp4",
+    "file": "08_hammer_fist.gif",
+    "gif_fps": 25,
+    "gif_size": [
+      480,
+      270
+    ],
+    "source_video_sha256": "409dee4762e1e97d705c51e9432dbe8b1430d62cee0cb98ab0275648542eb3f6",
+    "sha256": "9c7fdf688f2b5359ceb1715cee85693afdcb5b1e69cbe863b8058a18ee20c73e",
+    "gif_frames": 308,
+    "gif_duration_seconds": 12.32
+  },
+  {
+    "motion": "zz_motioncode_hdm_016_hook_kick",
+    "start": 0,
+    "end": 5.9,
+    "checkpoint": 184000,
+    "eval_motion_count": 60,
+    "frames": 295,
+    "fps": 50,
+    "size": [
+      1280,
+      720
+    ],
+    "camera": {
+      "follow": "root XY only",
+      "lookat_z": 0.68,
+      "distance": 3.15,
+      "azimuth": 130,
+      "elevation": -14
+    },
+    "overlay": false,
+    "ghost": "global reference",
+    "trajectory_edited": false,
+    "checkpoint_sha256": "aa42a1d483007ccce1b2e97ba0ccc15084a0cecdfd2b13376d85fe8777e9bbbb",
+    "trajectory_sha256": "fb0e2471c3ae9ccc2c4f48e959f4123205ab034ac451b270e2a0faa9ed992fe5",
+    "full_motion_completed": true,
+    "full_motion_normalized_return": 0.7632,
+    "source_video": "09_hook_kick.mp4",
+    "file": "09_hook_kick.gif",
+    "gif_fps": 25,
+    "gif_size": [
+      480,
+      270
+    ],
+    "source_video_sha256": "bc980abff2d544d98f681326357468ce547bedb02992f4bca932fd845833f5b9",
+    "sha256": "576d3a1a7f3ee0bba8c5ba580bdf223014eb8a79e4736882049a1ef170216db8",
+    "gif_frames": 148,
+    "gif_duration_seconds": 5.92
+  },
+  {
+    "motion": "zz_motioncode_hdm_017_roundhouse_kick_combination",
+    "start": 0,
+    "end": 5.5,
+    "checkpoint": 136000,
+    "frames": 275,
+    "fps": 50,
+    "size": [
+      1280,
+      720
+    ],
+    "camera": {
+      "follow": "root XY only",
+      "lookat_z": 0.68,
+      "distance": 3.15,
+      "azimuth": 130,
+      "elevation": -14
+    },
+    "overlay": false,
+    "ghost": "global reference",
+    "trajectory_edited": false,
+    "checkpoint_sha256": "46c3a64e76ad140ce12e181e1d1df12169ad7715fbb25602a4d39829cb2e506f",
+    "trajectory_sha256": "cb4e429f5d07a01ca2c824c83e9fb23ef5995ded393df0d0b53e7fe1e73615c3",
+    "full_motion_completed": true,
+    "full_motion_normalized_return": 0.7978,
+    "source_video": "10_roundhouse_combo.mp4",
+    "file": "10_roundhouse_combo.gif",
+    "gif_fps": 25,
+    "gif_size": [
+      480,
+      270
+    ],
+    "source_video_sha256": "86786229f8cc7dc9b026ffc52d4865795354e1bdf6dd00803255dee00532cf50",
+    "sha256": "611a4a67a7637275e70fe462959dba523979d59b74f5991e2f30041c6815ce64",
+    "gif_frames": 138,
+    "gif_duration_seconds": 5.52
+  },
+  {
+    "motion": "zz_motioncode_hdm_020_spinning_kick",
+    "start": 0,
+    "end": 4.3,
+    "checkpoint": 184000,
+    "eval_motion_count": 60,
+    "frames": 215,
+    "fps": 50,
+    "size": [
+      1280,
+      720
+    ],
+    "camera": {
+      "follow": "root XY only",
+      "lookat_z": 0.68,
+      "distance": 3.15,
+      "azimuth": 130,
+      "elevation": -14
+    },
+    "overlay": false,
+    "ghost": "global reference",
+    "trajectory_edited": false,
+    "checkpoint_sha256": "aa42a1d483007ccce1b2e97ba0ccc15084a0cecdfd2b13376d85fe8777e9bbbb",
+    "trajectory_sha256": "fb0e2471c3ae9ccc2c4f48e959f4123205ab034ac451b270e2a0faa9ed992fe5",
+    "full_motion_completed": true,
+    "full_motion_normalized_return": 0.6996,
+    "source_video": "11_spinning_kick.mp4",
+    "file": "11_spinning_kick.gif",
+    "gif_fps": 25,
+    "gif_size": [
+      480,
+      270
+    ],
+    "source_video_sha256": "fcc1153722097f20dcb9e71b03ce6d8d90564ea57c1feb67ae5221d707af9b8d",
+    "sha256": "8bdceed2f8e5038edbcb284c5e6e83599a9a8f51b7a0176f6e8fe88f5e48890e",
+    "gif_frames": 108,
+    "gif_duration_seconds": 4.32
+  }
+]
