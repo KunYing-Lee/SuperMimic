@@ -1,6 +1,6 @@
 # SuperMimic on mjlab
 
-Humanoid whole-body motion tracking with a differentiable world model, built on [mjlab](https://github.com/mujocolab/mjlab) and MuJoCo-Warp. An independent implementation of [SuperMimic](https://arxiv.org/abs/2610.28480), based on [supermimic_vibed](https://github.com/zita-ch/supermimic_vibed).
+Humanoid whole-body motion tracking with a differentiable world model, built on [mjlab](https://github.com/mujocolab/mjlab) and MuJoCo-Warp. An independent implementation of [SuperMimic](https://arxiv.org/abs/2610.28480).
 
 ## Demos
 
