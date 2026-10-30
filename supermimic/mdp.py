@@ -77,6 +77,16 @@ INV_DIM = 1 + 3 + 3 + 3 + 29 + 29
 
 
 class MDP:
+    """Flat-ground motion tracking. A task variant (supermimic.climb) overrides the
+    hooks below; their defaults are this task's own behaviour."""
+
+    analytic_termination = False  # False: imagination uses the learned termination head
+    aux_dim = 0  # per-env task state carried through steps and replay (e.g. hold timers)
+    wm_extra_dim = 0  # world-model inputs beyond the invariant state (e.g. route geometry)
+    contact_dim = 0  # per-step contact labels the world model also predicts
+    max_step_reward = MAX_STEP_REWARD
+    critic_extra = 29 + 14 * 3 + 3 + 6 + XI_DIM
+
     def __init__(self, kin: G1Kinematics, motion: MotionLib, default_q: torch.Tensor, cfg: RewardCfg = RewardCfg()):
         self.kin, self.motion, self.cfg = kin, motion, cfg
         self.default_q = default_q
@@ -84,6 +94,27 @@ class MDP:
         self.soft_lo, self.soft_hi = mid - half * cfg.soft_limit_factor, mid + half * cfg.soft_limit_factor
         dev = default_q.device
         self.obs_noise = OBS_NOISE.to(dev)
+
+    # ---------------- task hooks ----------------
+    def goal_dim(self, K: int) -> int:
+        return 73 * K
+
+    def goal(self, f, K: int, S) -> torch.Tensor:
+        return self.motion.goal(f, K, S)
+
+    def features(self, S) -> tuple:
+        """What the task's heads share of a state, computed once a step (none here)."""
+        return ()
+
+    def wm_features(self, S, F=()) -> torch.Tensor:
+        return S[0].new_zeros(*S[0].shape[:-1], 0)
+
+    def schedule(self, env_steps: int) -> None:
+        """Move a curriculum on to ``env_steps`` environment steps (none here)."""
+
+    def terminate(self, S, f, aux, F=()):
+        """(next task state, termination) after a step to S at reference frame f."""
+        return aux, self.termination(S, f)
 
     # ---------------- observation ----------------
     def obs(self, S, a_prev, xi, f) -> torch.Tensor:
@@ -98,7 +129,7 @@ class MDP:
         return o + (2 * torch.rand_like(o) - 1) * self.obs_noise
 
     # ---------------- reward / termination ----------------
-    def reward(self, S, f, a, a_prev, terms: bool = False):
+    def reward(self, S, f, a, a_prev, terms: bool = False, F=()):
         """Per-step reward (already multiplied by dt) comparing S with reference frame f."""
         c, m = self.cfg, self.motion
         p, R, v, w, q, qd = S

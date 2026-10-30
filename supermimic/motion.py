@@ -46,11 +46,7 @@ class MotionLib:
             quat = quat_slerp(quat[i0], quat[i0 + 1], a)
             ps.append(p), qs.append(quat), js.append(j)
             lens.append(n)
-        self.clip_len = torch.tensor(lens, device=device)
-        self.clip_start = torch.cumsum(torch.cat((torch.zeros(1, dtype=torch.long), torch.tensor(lens[:-1], dtype=torch.long))), 0).to(device)  # dtype: one clip gives an empty (float) tensor
-        self.clip_end = self.clip_start + self.clip_len - 1  # last valid frame (inclusive)
-        self.num_frames = int(sum(lens))
-        self.clip_id = torch.cat([torch.full((n,), i, dtype=torch.long) for i, n in enumerate(lens)]).to(device)
+        self._index_clips(lens, device)
 
         root_p, root_R, root_v, root_w, jq, jqd = [], [], [], [], [], []
         for p, quat, j in zip(ps, qs, js):
@@ -78,7 +74,14 @@ class MotionLib:
         self.root_v_local = matvec3(Rt, self.root_v)
         self.root_w_local = matvec3(Rt, self.root_w)
         self.root_gz = self.root_R[:, 2, 2]  # -(projected gravity z) of the reference root: g_b = R^T (0,0,-1)
-        # 1 s bins
+
+    def _index_clips(self, lens: list[int], device: str) -> None:
+        """Concatenated-frame clip tables and the 1 s bins of return-based reset sampling."""
+        self.clip_len = torch.tensor(lens, device=device)
+        self.clip_start = torch.cumsum(torch.cat((torch.zeros(1, dtype=torch.long), torch.tensor(lens[:-1], dtype=torch.long))), 0).to(device)  # dtype: one clip gives an empty (float) tensor
+        self.clip_end = self.clip_start + self.clip_len - 1  # last valid frame (inclusive)
+        self.num_frames = int(sum(lens))
+        self.clip_id = torch.cat([torch.full((n,), i, dtype=torch.long) for i, n in enumerate(lens)]).to(device)
         bin_clip, bin_start = [], []
         for c in range(len(lens)):
             nb = int(np.ceil((lens[c] - 1) / BIN_FRAMES))

@@ -16,8 +16,11 @@ from .rotations import axis_angle_to_mat, matmul3, matvec3, quat_to_mat
 
 
 class G1Kinematics:
-    def __init__(self, device: str, tracked: list[str] = TRACKED_BODIES):
-        m = mujoco.MjModel.from_xml_path(MJCF_PATH)
+    def __init__(self, device: str, tracked: list[str] = TRACKED_BODIES, model: mujoco.MjModel | None = None,
+                 sites: tuple[str, ...] = ()):
+        """FK of ``model`` (the G1 MJCF by default). ``sites``: fixed frames on moving
+        bodies whose world poses ``site_poses`` returns, e.g. a climbing hook's seat."""
+        m = model if model is not None else mujoco.MjModel.from_xml_path(MJCF_PATH)
         self.device = device
         jname_to_idx = {n: i for i, n in enumerate(G1_JOINT_NAMES)}
         # moving bodies in tree order (mujoco orders parents before children)
@@ -58,14 +61,13 @@ class G1Kinematics:
                 lo[jname_to_idx[n]], hi[jname_to_idx[n]] = m.jnt_range[j]
         self.q_lo = torch.tensor(lo, dtype=torch.float32, device=device)
         self.q_hi = torch.tensor(hi, dtype=torch.float32, device=device)
+        site_ids = [m.site(n).id for n in sites]
+        self.site_body = [bodies.index(m.body(m.site_bodyid[i]).name) for i in site_ids]
+        self.site_p = torch.tensor(np.array([m.site_pos[i] for i in site_ids]).reshape(-1, 3), dtype=torch.float32, device=device)
+        self.site_R = quat_to_mat(torch.tensor(np.array([m.site_quat[i] for i in site_ids]).reshape(-1, 4), dtype=torch.float32, device=device))
 
-    def forward(self, p, R, v, w, q, qd, all_bodies: bool = False):
-        """Tracked-body world positions, rotations, linear (link-origin) and angular velocities.
-
-        Args:
-            p, R, v, w: root (pelvis) position (B,3), rotation (B,3,3), world lin/ang velocity (B,3).
-            q, qd: joint positions/velocities (B,29) in G1_JOINT_NAMES order.
-        """
+    def _chain(self, p, R, v, w, q, qd):
+        """Every moving body's world position, rotation, linear and angular velocity."""
         P, Rs, V, W = [None] * self.num_bodies, [None] * self.num_bodies, [None] * self.num_bodies, [None] * self.num_bodies
         for i in range(self.num_bodies):
             par = self.parent[i]
@@ -81,6 +83,16 @@ class G1Kinematics:
             wi = W[par] + axis_w * qd[..., j : j + 1]
             vi = V[par] + torch.cross(W[par], pi - P[par], dim=-1)
             P[i], Rs[i], V[i], W[i] = pi, Ri, vi, wi
+        return P, Rs, V, W
+
+    def forward(self, p, R, v, w, q, qd, all_bodies: bool = False):
+        """Tracked-body world positions, rotations, linear (link-origin) and angular velocities.
+
+        Args:
+            p, R, v, w: root (pelvis) position (B,3), rotation (B,3,3), world lin/ang velocity (B,3).
+            q, qd: joint positions/velocities (B,29) in G1_JOINT_NAMES order.
+        """
+        P, Rs, V, W = self._chain(p, R, v, w, q, qd)
         idx = range(self.num_bodies) if all_bodies else self.tracked_idx
         return (
             torch.stack([P[i] for i in idx], -2),
@@ -88,3 +100,20 @@ class G1Kinematics:
             torch.stack([V[i] for i in idx], -2),
             torch.stack([W[i] for i in idx], -2),
         )
+
+    def site_poses(self, p, R, v, w, q, qd):
+        """World positions (B, n, 3) and rotations (B, n, 3, 3) of the ``sites``."""
+        P, Rs, _, _ = self._chain(p, R, v, w, q, qd)
+        bp = torch.stack([P[b] for b in self.site_body], -2)
+        bR = torch.stack([Rs[b] for b in self.site_body], -3)
+        return bp + matvec3(bR, self.site_p), matmul3(bR, self.site_R)
+
+    def bodies_and_sites(self, p, R, v, w, q, qd):
+        """``forward``'s tracked bodies and ``site_poses``' sites from one chain."""
+        P, Rs, V, W = self._chain(p, R, v, w, q, qd)
+        idx = self.tracked_idx
+        bp = torch.stack([P[b] for b in self.site_body], -2)
+        bR = torch.stack([Rs[b] for b in self.site_body], -3)
+        return (torch.stack([P[i] for i in idx], -2), torch.stack([Rs[i] for i in idx], -3),
+                torch.stack([V[i] for i in idx], -2), torch.stack([W[i] for i in idx], -2),
+                bp + matvec3(bR, self.site_p), matmul3(bR, self.site_R))

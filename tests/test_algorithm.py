@@ -35,6 +35,7 @@ def transition(frame, done=False):
     out['ep_step'][:] = frame % 3
     out['done'][:] = done
     out['terminated'][:] = done
+    out['valid'][:] = True  # a physical transition, as the simulator labels every finite step
     return out
 
 
@@ -231,14 +232,14 @@ class RecomputeTests(unittest.TestCase):
             namespace = {'pi': policy, 'wm': wm, 'motion': motion, 'mdp': mdp, 'K': K, 'torch': torch}
             exec(compile(module, str(source_path), 'exec'), namespace)
             actual_step = namespace['_imag_step']
-            current, previous, hist, frame = initial, actions, observations, f0
+            current, previous, hist, frame, aux = initial, actions, observations, f0, torch.zeros(batch, 0)
             goal = motion.goal(frame, K, current)
             survival = torch.ones(batch)
             objective = torch.zeros(batch)
             for t in range(3):
-                inputs = (current, hist, previous, frame, xi, xi_n, goal)
+                inputs = (current, hist, previous, frame, xi, xi_n, goal, aux, ())
                 result = checkpoint(actual_step, *inputs, use_reentrant=False, preserve_rng_state=True) if recompute else actual_step(*inputs)
-                current, previous, hist, frame, goal, reward, termination = result
+                current, previous, hist, frame, goal, reward, termination, aux, _ = result
                 objective = objective + .99 ** t * survival * reward
                 survival = survival * (1 - termination)
             loss = -objective.mean()

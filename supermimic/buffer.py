@@ -17,18 +17,23 @@ FIELDS = {
     "ep_step": ((), torch.int32),
     "done": ((), torch.bool),
     "terminated": ((), torch.bool),
+    "valid": ((), torch.bool),  # False: a numerical blow-up; its successor is no target
 }
 
 
 class ReplayBuffer:
-    def __init__(self, T: int, N: int, device: str, storage_device: str | None = None):
+    def __init__(self, T: int, N: int, device: str, storage_device: str | None = None, extra: dict | None = None):
+        """``extra``: a task's further fields, name -> (shape, dtype), e.g. a climb's
+        hold timers (``aux``, given to imagined starts) and contact labels (``contact``,
+        world-model targets)."""
         if T < 1 or N < 1:
             raise ValueError("Replay dimensions must be positive")
         self.T, self.N = T, N
+        self.fields = {**FIELDS, **(extra or {})}
         self.device = torch.device(device)
         self.storage_device = torch.device(storage_device or device)
         self.data = {}
-        for k, (shape, dt) in FIELDS.items():
+        for k, (shape, dt) in self.fields.items():
             shp = (T, N) + ((shape,) if isinstance(shape, int) else shape)
             self.data[k] = torch.zeros(shp, dtype=dt, device=self.storage_device)
         self.ptr, self.size = 0, 0
@@ -38,7 +43,7 @@ class ReplayBuffer:
         return sum(v.numel() * v.element_size() for v in self.data.values())
 
     def add(self, tr: dict):
-        for k in FIELDS:
+        for k in self.fields:
             self.data[k][self.ptr].copy_(tr[k])
         self.ptr = (self.ptr + 1) % self.T
         self.size = min(self.size + 1, self.T)
@@ -49,9 +54,9 @@ class ReplayBuffer:
     def load_state_dict(self, state: dict):
         if (state["T"], state["N"]) != (self.T, self.N):
             raise ValueError("Resume requires the original replay capacity and environment count")
-        if set(state["data"]) != set(FIELDS):
+        if set(state["data"]) != set(self.fields):
             raise ValueError("Checkpoint replay schema does not match this version")
-        for k in FIELDS:
+        for k in self.fields:
             self.data[k].copy_(state["data"][k])
         self.ptr, self.size = state["ptr"], state["size"]
 
@@ -71,9 +76,11 @@ class ReplayBuffer:
         env = torch.randint(0, self.N, (B,), device=dev)
         rows = self._row(t0.unsqueeze(-1) + torch.arange(k, device=dev))
         e = env.unsqueeze(-1).expand_as(rows)
-        out = self._to_learner({key: self.data[key][rows, e] for key in ("s", "s1", "a", "xi", "done", "terminated", "f")})
+        keys = ("s", "s1", "a", "xi", "done", "terminated", "f", "valid", *(k for k in ("contact",) if k in self.data))
+        out = self._to_learner({key: self.data[key][rows, e] for key in keys})
         d = out["done"].float()
         out["mask"] = torch.cumprod(torch.cat((torch.ones(B, 1, device=self.device), 1 - d[:, :-1]), -1), -1)
+        out["mask"] = out["mask"] * out["valid"].float()
         return out
 
     def sample_starts(self, B: int, hist: int, clip_end_by_frame: torch.Tensor | None = None, horizon: int = 0):
@@ -100,6 +107,6 @@ class ReplayBuffer:
         hrows = self._row(age.unsqueeze(-1) - back)
         henv = env.unsqueeze(-1).expand_as(hrows)
         keys = ("s", "a_prev", "xi", "f")
-        start = self._to_learner({k: self.data[k][row, env] for k in keys})
+        start = self._to_learner({k: self.data[k][row, env] for k in (*keys, *(k for k in ("aux",) if k in self.data))})
         history = self._to_learner({k: self.data[k][hrows, henv] for k in keys})
         return start, history

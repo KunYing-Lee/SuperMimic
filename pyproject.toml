@@ -8,6 +8,8 @@ dependencies = [
   "mjlab==1.6.0", "torch==2.11.0", "mujoco==3.11.0",
   "mujoco-warp==3.11.0", "warp-lang==1.14.0",
   "huggingface-hub>=1.0,<2", "numpy>=2,<3", "matplotlib>=3.10,<4", "pillow>=11,<13",
+  # The climbing task (--task climb): its robot, routes and MDP definitions.
+  "hbold",
 ]
 
 [dependency-groups]
@@ -27,6 +29,8 @@ url = "https://pypi.nvidia.com/"
 explicit = true
 
 [tool.uv.sources]
+# A sibling checkout while the climb is developed; pin by git commit for formal runs.
+hbold = { path = "../humanoid_boldering", editable = true }
 torch = [{index = "pytorch-cu128", marker = "sys_platform == 'linux'"}]
 warp-lang = [{index = "nvidia", marker = "sys_platform == 'linux'"}]
 

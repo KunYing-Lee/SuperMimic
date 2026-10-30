@@ -15,7 +15,7 @@ from mjlab.managers.event_manager import RecomputeLevel
 from mjlab.scene import Scene, SceneCfg
 from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 
-from .mdp import MAX_STEP_REWARD, MDP, flatten_state
+from .mdp import MDP, flatten_state
 from .motion import CONTROL_DT, MotionLib
 from .robot import G1_JOINT_NAMES, action_scale, make_g1_cfg
 from .rotations import mat_to_quat, matmul3, matvec3, quat_to_mat, so3_exp
@@ -91,7 +91,7 @@ class TrackingSim:
             raise ValueError("Require 0 < gamma < 1 and a positive optional episode horizon")
         self.device = sim_cfg.device
         self.cfg = sim_cfg
-        self.scene, self.sim = build_scene(sim_cfg, num_envs)
+        self.scene, self.sim = self._build_scene(num_envs)
         self.robot = self.scene["robot"]
         names = list(self.robot.joint_names)
         if len(names) != 29 or set(names) != set(G1_JOINT_NAMES):
@@ -104,7 +104,7 @@ class TrackingSim:
         self.reset_noise = reset_noise and not eval_mode
         dev = self.device
         self.default_q = self.robot.data.default_joint_pos[0, self.joint_ids].clone()
-        self.alpha = torch.tensor([action_scale(n) for n in G1_JOINT_NAMES], device=dev)
+        self.alpha = self._action_scale()
         self.torso_id = int(self.robot.indexing.body_ids[self.robot.body_names.index("torso_link")])
         self.xi = torch.zeros(self.N, 33, device=dev)
         # Domain parameters and all dependent constants must have a world axis.
@@ -126,7 +126,8 @@ class TrackingSim:
         self.start_bin = torch.zeros(self.N, dtype=torch.long, device=dev)
         self.ep_disc_ret = torch.zeros(self.N, device=dev)
         self.ep_ret = torch.zeros(self.N, device=dev)
-        self.G_max = MAX_STEP_REWARD / (1 - gamma)
+        self.aux = torch.zeros(self.N, mdp.aux_dim, device=dev)  # the task's per-env state (MDP.terminate)
+        self.G_max = mdp.max_step_reward / (1 - gamma)
         self.bin_G = torch.full((motion.num_bins,), 0.0, device=dev)
         self.bin_w_avg = torch.full((motion.num_bins,), 1.0 / motion.num_bins, device=dev)
         self.bin_count = torch.zeros(motion.num_bins, dtype=torch.long, device=dev)
@@ -135,6 +136,22 @@ class TrackingSim:
         self.done_eval = torch.zeros(self.N, dtype=torch.bool, device=dev)
         self.failed_eval = torch.zeros(self.N, dtype=torch.bool, device=dev)
         self.reset(torch.arange(self.N, device=dev))
+
+    # ------------------------------------------------------------------ task hooks
+    def _build_scene(self, num_envs: int):
+        return build_scene(self.cfg, num_envs)
+
+    def _action_scale(self) -> torch.Tensor:
+        return torch.tensor([action_scale(n) for n in G1_JOINT_NAMES], device=self.device)
+
+    def action_bounds(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Per joint, the actions whose PD targets the motors can act on (none here)."""
+        inf = torch.full((29,), torch.inf, device=self.device)
+        return -inf, inf
+
+    def _labels(self) -> dict:
+        """Per-step labels beyond the state, read after the physics (none here)."""
+        return {}
 
     # ------------------------------------------------------------------ domain / state
     def _randomize_context(self, env_ids):
@@ -229,6 +246,7 @@ class TrackingSim:
         self.start_bin[env_ids] = bins
         self.ep_disc_ret[env_ids] = 0.0
         self.ep_ret[env_ids] = 0.0
+        self.aux[env_ids] = 0.0
 
     def refresh(self):
         """Propagate written states so that ``state()`` is consistent after a reset."""
@@ -250,16 +268,26 @@ class TrackingSim:
             self.scene.update(self.cfg.physics.mujoco.timestep)
         S1 = self.state()
         f1 = f + 1
-        r, terms = self.mdp.reward(S1, f1, a, a_prev, terms=True)
-        term = self.mdp.termination(S1, f1)
+        # A numerical blow-up (MuJoCo-Warp can diverge on hard contacts) is no
+        # transition: its successor stays out of every target and normalizer, its
+        # episode ends as a time-out, never as a failure the policy caused.
+        valid = torch.isfinite(flatten_state(S1)).all(-1)
+        S1 = tuple(torch.where(valid.view(-1, *[1] * (x.dim() - 1)), x, x0) for x, x0 in zip(S1, S))
+        F1 = self.mdp.features(S1)
+        r, terms = self.mdp.reward(S1, f1, a, a_prev, terms=True, F=F1)
+        r = torch.where(valid, r, 0.0)
+        aux = self.aux.clone()
+        self.aux, term = self.mdp.terminate(S1, f1, aux, F=F1)
+        term = term & valid
         clip_end = self.motion.clip_end[self.motion.clip_id[f]]
         timeout = f1 >= clip_end
         if self.max_episode_steps is not None:
             timeout = timeout | (ep_step + 1 >= self.max_episode_steps)
-        done = term | timeout
+        done = term | timeout | ~valid
         out = {
             "s": flatten_state(S), "a": a.clone(), "a_prev": a_prev, "f": f, "s1": flatten_state(S1), "r": r,
             "term": term, "terminated": term, "done": done, "ep_step": ep_step, "xi": xi, "terms": terms,
+            "aux": aux, "valid": valid, **self._labels(),
         }  # fmt: skip
         # bookkeeping
         self.ep_disc_ret += (self.gamma ** ep_step.float()) * r
@@ -289,7 +317,7 @@ class TrackingSim:
             self.bin_G[unique] = (self.bin_G[unique] * previous + total) / (previous + count)
             self.bin_count[unique] += count
             out["ep_len"] = T
-            out["ep_ret_norm"] = self.ep_ret[ids] / (self.ep_horizon[ids] * MAX_STEP_REWARD)
+            out["ep_ret_norm"] = self.ep_ret[ids] / (self.ep_horizon[ids] * self.mdp.max_step_reward)
             self.reset(ids)
         return out
 
@@ -302,7 +330,7 @@ class TrackingSim:
     _EPISODE_FIELDS = (
         "xi", "f", "ep_step", "a_prev", "start_bin", "ep_disc_ret", "ep_ret",
         "bin_G", "bin_w_avg", "bin_count", "sampling_updates", "ep_horizon",
-        "done_eval", "failed_eval",
+        "done_eval", "failed_eval", "aux",
     )
     _TARGET_FIELDS = ("joint_pos_target", "joint_vel_target", "joint_effort_target")
 
