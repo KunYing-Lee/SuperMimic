@@ -54,6 +54,9 @@ parser.add_argument("--task", default="lafan", choices=["lafan", "climb"],
                     help="lafan: flat-ground tracking of --motion_dir; climb: the hooked G1 on a Kilter route (hbold)")
 parser.add_argument("--clip", type=str, default=None, help="climb: the Kilter clip id under hbold's data directory")
 parser.add_argument("--hbold_data", type=str, default=None, help="climb: hbold's data directory (else HBOLD_DATA)")
+parser.add_argument("--njmax", type=int, default=None,
+                    help="climb: constraint rows per world (default hbold's 1500; Phase 2 measured a peak of 187)")
+parser.add_argument("--nconmax", type=int, default=None, help="climb: contacts per world (default hbold's 256)")
 args = parser.parse_args()
 if args.task == "climb" and not args.clip:
     parser.error("--task climb needs --clip")
@@ -105,6 +108,9 @@ if args.task == "climb":
     from supermimic.climb.sim import ClimbSim, climb_physics
 
     sim_cfg.physics = climb_physics(args.clip)
+    # Capacity only: the solution is the same unless a buffer overflows, which mjlab reports.
+    sim_cfg.physics.njmax = args.njmax or sim_cfg.physics.njmax
+    sim_cfg.physics.nconmax = args.nconmax or sim_cfg.physics.nconmax
     kin, motion, mdp = climb_parts(args.clip, dev)
     robot_path, task_sources = G1_HOOK_XML, sorted(Path(hbold.__file__).parent.rglob("*.py"))
 else:
