@@ -248,6 +248,29 @@ class TrackingSim:
         self.ep_ret[env_ids] = 0.0
         self.aux[env_ids] = 0.0
 
+    def set_state(self, env_ids: torch.Tensor, S, xi: torch.Tensor, frames: torch.Tensor) -> None:
+        """Put envs in given states (tuples as ``state()`` returns) with context xi at
+        reference frames: for audits that run cloned states side by side. The
+        episode starts there (task state and history cleared)."""
+        p, R, v, w, q, qd = S
+        self.sim.reset(env_ids)
+        self.scene.reset(env_ids)
+        self.xi[env_ids] = xi
+        self._apply_context(env_ids)
+        pose = torch.cat((p + self.scene.env_origins[env_ids], mat_to_quat(R)), -1)
+        self.robot.write_root_link_pose_to_sim(pose, env_ids=env_ids)
+        self.robot.write_root_link_velocity_to_sim(torch.cat((v, w), -1), env_ids=env_ids)
+        self.robot.write_joint_state_to_sim(q, qd, joint_ids=self.joint_ids, env_ids=env_ids)
+        self.robot.set_joint_position_target(q, joint_ids=self.joint_ids, env_ids=env_ids)
+        self.f[env_ids] = frames
+        remaining = self.motion.clip_end[self.motion.clip_id[frames]] - frames
+        self.ep_horizon[env_ids] = remaining.clamp(min=1)
+        self.ep_step[env_ids] = 0
+        self.a_prev[env_ids] = 0.0
+        self.ep_disc_ret[env_ids] = 0.0
+        self.ep_ret[env_ids] = 0.0
+        self.aux[env_ids] = 0.0
+
     def refresh(self):
         """Propagate written states so that ``state()`` is consistent after a reset."""
         self.sim.forward()

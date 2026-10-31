@@ -38,6 +38,40 @@ def climb_physics(clip_id: str) -> SimulationCfg:
     return physics
 
 
+def hook_action_scale(device: str) -> torch.Tensor:
+    """hbold's per-joint action scale (SDK order) for its stiffer gains."""
+    scale = []
+    for name in G1_JOINT_NAMES:
+        hits = [v for pat, v in g1.ACTION_SCALE.items() if re.fullmatch(pat, name)]
+        if len(hits) != 1:
+            raise ValueError(f"{name}: {len(hits)} action scales match")
+        scale.append(float(hits[0]))
+    return torch.tensor(scale, dtype=torch.float32, device=device)
+
+
+def pd_action_bounds(m, default_q: torch.Tensor, alpha: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per joint (SDK order), the actions whose PD target lets the motor reach
+    either torque limit anywhere in its joint range at up to its rated speed:
+    tau = kp (target - q) - kd qdot, target = default + offset + alpha a, the
+    encoder offset within its randomized range. A PD target past this cannot
+    change the torque, only the model's view of it (Codex's actions ran to 1e4).
+    Rated speeds are motor ratings, not a velocity clamp in the simulation.
+    ``m``: the compiled scene's MjModel (robot joints prefixed ``robot/``)."""
+    lo, hi = [], []
+    for k, name in enumerate(G1_JOINT_NAMES):
+        jid = m.joint(f"robot/{name}").id
+        aid = [i for i in range(m.nu) if m.actuator_trntype[i] == 0 and m.actuator_trnid[i, 0] == jid]
+        if len(aid) != 1 or not m.actuator_forcelimited[aid[0]]:
+            raise ValueError(f"{name}: expected one force-limited position actuator")
+        kp, kd = float(m.actuator_gainprm[aid[0], 0]), -float(m.actuator_biasprm[aid[0], 2])
+        margin = (float(m.actuator_forcerange[aid[0], 1]) + kd * motor_of(name)[1]) / kp + JOINT_OFFSET
+        q_lo, q_hi = m.jnt_range[jid]
+        lo.append((q_lo - margin - float(default_q[k])) / float(alpha[k]))
+        hi.append((q_hi + margin - float(default_q[k])) / float(alpha[k]))
+    dev = default_q.device
+    return (torch.tensor(lo, dtype=torch.float32, device=dev), torch.tensor(hi, dtype=torch.float32, device=dev))
+
+
 class ClimbSim(TrackingSim):
     def __init__(self, sim_cfg, num_envs: int, motion, mdp, clip_id: str, **kwargs):
         self.clip_id = clip_id
@@ -56,14 +90,7 @@ class ClimbSim(TrackingSim):
         return scene, sim
 
     def _action_scale(self) -> torch.Tensor:
-        """hbold's per-joint scale for its stiffer gains (patterns over joint names)."""
-        scale = []
-        for name in G1_JOINT_NAMES:
-            hits = [v for pat, v in g1.ACTION_SCALE.items() if re.fullmatch(pat, name)]
-            if len(hits) != 1:
-                raise ValueError(f"{name}: {len(hits)} action scales match")
-            scale.append(float(hits[0]))
-        return torch.tensor(scale, dtype=torch.float32, device=self.device)
+        return hook_action_scale(self.device)
 
     def _apply_context(self, env_ids):
         """Joint offsets and the torso's centre of mass; friction stays the
@@ -77,26 +104,7 @@ class ClimbSim(TrackingSim):
         self.xi[env_ids, 0] = 1.0  # the friction slot is unused here; held at its eval value
 
     def action_bounds(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Per joint, the actions whose PD target lets the motor reach either torque
-        limit anywhere in its joint range at up to its rated speed:
-        tau = kp (target - q) - kd qdot, target = default + offset + alpha a, the
-        encoder offset within its randomized range. A PD target past this cannot
-        change the torque, only the model's view of it (Codex's actions ran to 1e4).
-        Rated speeds are motor ratings, not a velocity clamp in the simulation."""
-        m = self.sim.mj_model
-        lo, hi = [], []
-        for k, name in enumerate(G1_JOINT_NAMES):
-            jid = m.joint(f"robot/{name}").id
-            aid = [i for i in range(m.nu) if m.actuator_trntype[i] == 0 and m.actuator_trnid[i, 0] == jid]
-            if len(aid) != 1 or not m.actuator_forcelimited[aid[0]]:
-                raise ValueError(f"{name}: expected one force-limited position actuator")
-            kp, kd = float(m.actuator_gainprm[aid[0], 0]), -float(m.actuator_biasprm[aid[0], 2])
-            margin = (float(m.actuator_forcerange[aid[0], 1]) + kd * motor_of(name)[1]) / kp + JOINT_OFFSET
-            q_lo, q_hi = m.jnt_range[jid]
-            lo.append((q_lo - margin - float(self.default_q[k])) / float(self.alpha[k]))
-            hi.append((q_hi + margin - float(self.default_q[k])) / float(self.alpha[k]))
-        return (torch.tensor(lo, dtype=torch.float32, device=self.device),
-                torch.tensor(hi, dtype=torch.float32, device=self.device))
+        return pd_action_bounds(self.sim.mj_model, self.default_q, self.alpha)
 
     def _labels(self) -> dict:
         """(N, 4) each limb presses on the route harder than its newtons."""
