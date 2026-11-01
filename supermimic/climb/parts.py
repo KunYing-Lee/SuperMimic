@@ -32,9 +32,12 @@ def default_joint_pos() -> list[float]:
 
 
 def climb_parts(clip_id: str, device: str) -> tuple[G1Kinematics, ClimbMotion, ClimbMDP]:
+    """`clip_id`: one clip, or several joined by commas (clip i on route i)."""
+    clips = clip_id.split(",")
     kin = G1Kinematics(device, model=g1.get_spec().compile(), sites=LIMB_SITES)
-    motion = ClimbMotion(str(motion_path(clip_id)), device)
-    route = kilter.load(route_path(clip_id))
+    motion = ClimbMotion([str(motion_path(c)) for c in clips], device)
+    routes = [kilter.load(route_path(c)) for c in clips]
+    bars = geometry.stack_bars([geometry.bars(r, device, i) for i, r in enumerate(routes)])
+    board = geometry.stack_boards([geometry.board(r, device, i) for i, r in enumerate(routes)])
     default_q = torch.tensor(default_joint_pos(), device=device)
-    mdp = ClimbMDP(kin, motion, default_q, geometry.bars(route, device), geometry.board(route, device))
-    return kin, motion, mdp
+    return kin, motion, ClimbMDP(kin, motion, default_q, bars, board)

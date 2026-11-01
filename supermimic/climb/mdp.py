@@ -72,12 +72,17 @@ class ClimbMDP(MDP):
         landing = limbs.goal(S[0], mat_to_quat(S[1]), m.goal_pos[f], m.goal_quat[f])
         return torch.cat((m.goal(f, K, S), landing, limbs.limb_onehot(m.limb[f])), -1)
 
-    def wm_features(self, S, F=()) -> torch.Tensor:
+    def wm_features(self, S, F=(), f=None) -> torch.Tensor:
         """The route as the world model sees it: each limb's nearest bars in its
-        site's frame, and the board's distance and face from the pelvis."""
+        site's frame, and the board's distance and face from the pelvis. `f`:
+        each state's reference frame, which says its clip's route (needed when
+        there is more than one route)."""
         sites, site_R = (F or self.features(S))[4:]
-        bars = geometry.nearest_bars(sites, mat_to_quat(site_R), self.bars, NEAR_BARS)
-        board = geometry.board_features(S[0], mat_to_quat(S[1]), self.board)
+        route = None if f is None else self.motion.clip_id[f]
+        if route is None and len(self.motion.names) > 1:
+            raise ValueError("several routes: wm_features needs each state's reference frame")
+        bars = geometry.nearest_bars(sites, mat_to_quat(site_R), self.bars, NEAR_BARS, route=route)
+        board = geometry.board_features(S[0], mat_to_quat(S[1]), self.board, route=route)
         return torch.cat((bars.flatten(-3), board), -1)
 
     def terminate(self, S, f, aux, F=()):

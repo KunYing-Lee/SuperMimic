@@ -86,7 +86,7 @@ def imagined(policy, S, xi, f, seed):
     aux, feats, rs, cs = torch.zeros(len(f), mdp.aux_dim, device=DEV), mdp.features(S), [], []
     for _ in range(H):
         a = policy(obs, mdp.goal(f, K, S))
-        S = wm.step(S, a, xi_n, mdp.wm_features(S, feats))
+        S = wm.step(S, a, xi_n, mdp.wm_features(S, feats, f))
         f = f + 1
         feats = mdp.features(S)
         o = mdp.add_noise(mdp.obs(S, a, xi, f))

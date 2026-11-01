@@ -149,6 +149,11 @@ class TrackingSim:
         inf = torch.full((29,), torch.inf, device=self.device)
         return -inf, inf
 
+    def _origin(self, env_ids, frames: torch.Tensor) -> torch.Tensor:
+        """Where the reference's frame sits in the simulator for envs at
+        reference frames ``frames``: states are relative to it."""
+        return self.scene.env_origins[env_ids]
+
     def _labels(self) -> dict:
         """Per-step labels beyond the state, read after the physics (none here)."""
         return {}
@@ -180,7 +185,7 @@ class TrackingSim:
         idx = self.robot.indexing
         root_q = self.sim.data.qpos[:, idx.free_joint_q_adr].clone()
         root_v = self.sim.data.qvel[:, idx.free_joint_v_adr].clone()
-        p = root_q[:, :3] - self.scene.env_origins
+        p = root_q[:, :3] - self._origin(slice(None), self.f)
         R = quat_to_mat(root_q[:, 3:7])  # mjlab/MuJoCo use wxyz.
         w = matvec3(R, root_v[:, 3:6])
         d = self.robot.data
@@ -233,7 +238,7 @@ class TrackingSim:
         self.sim.reset(env_ids)
         self.scene.reset(env_ids)
         self._randomize_context(env_ids)
-        pose = torch.cat((p + self.scene.env_origins[env_ids], quat), -1)
+        pose = torch.cat((p + self._origin(env_ids, frames), quat), -1)
         self.robot.write_root_link_pose_to_sim(pose, env_ids=env_ids)
         self.robot.write_root_link_velocity_to_sim(torch.cat((v, w), -1), env_ids=env_ids)
         self.robot.write_joint_state_to_sim(q, qd, joint_ids=self.joint_ids, env_ids=env_ids)
@@ -257,7 +262,7 @@ class TrackingSim:
         self.scene.reset(env_ids)
         self.xi[env_ids] = xi
         self._apply_context(env_ids)
-        pose = torch.cat((p + self.scene.env_origins[env_ids], mat_to_quat(R)), -1)
+        pose = torch.cat((p + self._origin(env_ids, frames), mat_to_quat(R)), -1)
         self.robot.write_root_link_pose_to_sim(pose, env_ids=env_ids)
         self.robot.write_root_link_velocity_to_sim(torch.cat((v, w), -1), env_ids=env_ids)
         self.robot.write_joint_state_to_sim(q, qd, joint_ids=self.joint_ids, env_ids=env_ids)

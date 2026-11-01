@@ -63,8 +63,8 @@ kin, motion, mdp = climb_parts(args.clip, DEV)
 GEOM = args.variant == "geom"
 
 
-def features(S):
-    return mdp.wm_features(S) if GEOM else S[0].new_zeros(S[0].shape[0], 0)
+def features(S, f):
+    return mdp.wm_features(S, f=f) if GEOM else S[0].new_zeros(S[0].shape[0], 0)
 
 
 # ---------------------------------------------------------------- data
@@ -110,23 +110,23 @@ with torch.no_grad():  # the normalizers, from training transitions as train.py'
         w = train.sample_windows(4096, 1)
         ok = w["valid"][:, 0]
         S0, S1 = unflatten_state(w["s"][ok, 0]), unflatten_state(w["s1"][ok, 0])
-        wm.in_norm.update(wm.inputs(S0, w["a"][ok, 0], normalize_xi(w["xi"][ok, 0]), features(S0)))
+        wm.in_norm.update(wm.inputs(S0, w["a"][ok, 0], normalize_xi(w["xi"][ok, 0]), features(S0, w["f"][ok, 0])))
         wm.out_norm.update(wm.targets(S0, S1))
 
 
-def rollout(s, a, xi):
+def rollout(s, a, xi, f):
     """Open-loop: (states over the window, contact logits)."""
     S = unflatten_state(s[:, 0])
     preds, contacts = [], []
     for j in range(a.shape[1]):
-        S, c = wm.predict(S, a[:, j], normalize_xi(xi[:, j]), features(S))
+        S, c = wm.predict(S, a[:, j], normalize_xi(xi[:, j]), features(S, f[:, j]))
         preds.append(S)
         contacts.append(c)
     return tuple(torch.stack([P[i] for P in preds], 1) for i in range(6)), torch.stack(contacts, 1)
 
 
 def loss_of(w):
-    S_hat, c = rollout(w["s"], w["a"], w["xi"])
+    S_hat, c = rollout(w["s"], w["a"], w["xi"], w["f"])
     state_error = wm.state_error(S_hat, unflatten_state(w["s1"])).square().sum(-1)
     contact_error = F.binary_cross_entropy_with_logits(c, w["contact"].float(), reduction="none").sum(-1)
     m = w["mask"]
@@ -199,7 +199,7 @@ def site_errors(H: int) -> dict:
     w = alive_windows(test, args.eval_windows, H)
     for i in range(0, len(w["s"]), 1024):
         b = {k: v[i:i + 1024] for k, v in w.items()}
-        S_hat, _ = rollout(b["s"], b["a"], b["xi"])
+        S_hat, _ = rollout(b["s"], b["a"], b["xi"], b["f"])
         last = lambda S: tuple(x[:, -1] for x in S)  # noqa: E731
         p_hat = kin.site_poses(*last(S_hat))[0]
         p_true = kin.site_poses(*last(unflatten_state(b["s1"])))[0]
@@ -246,7 +246,7 @@ def contact_and_cuts(H: int = 8) -> dict:
     cut_tp = cut_fp = cut_fn = cut_tn = 0
     for i in range(0, len(w["s"]), 1024):
         b = {k: v[i:i + 1024] for k, v in w.items()}
-        S_hat, c = rollout(b["s"], b["a"], b["xi"])
+        S_hat, c = rollout(b["s"], b["a"], b["xi"], b["f"])
         pred, lab = c > 0, b["contact"]
         tp += int((pred & lab).sum()); fp += int((pred & ~lab).sum()); fn += int((~pred & lab).sum())
         S_true = unflatten_state(b["s1"])

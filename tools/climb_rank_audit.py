@@ -106,7 +106,7 @@ with torch.no_grad():
     S, f, a_prev = S0, rep(f0), torch.zeros(M * K, 29, device=DEV)
     aux = torch.zeros(M * K, mdp.aux_dim, device=DEV)
     for j in range(H):
-        extra = mdp.wm_features(S) if geom else S[0].new_zeros(M * K, 0)
+        extra = mdp.wm_features(S, f=f) if geom else S[0].new_zeros(M * K, 0)
         S = wm.step(S, acts[:, j], normalize_xi(rep(xi)), extra)
         f = f + 1
         r_wm.append(mdp.reward(S, f, acts[:, j], a_prev))

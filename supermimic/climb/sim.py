@@ -3,22 +3,28 @@
 The scene and physics settings are taken whole from hbold's motion-tracking
 task config (the hooked G1 with its stiffer gains, the clip's route, the
 plane terrain, the solver budget), so this simulator and hbold's PPO env step
-the same model. Every world's route sits at the origin (env spacing 0), so
-states are route-relative. Each limb also gets a contact sensor on the route;
-whether it presses there is the world model's auxiliary contact label.
+the same model. With several clips (ids joined by commas) every world holds
+every clip's route, route k at y = k * ROUTE_TILE, and an episode on clip k
+plays on route k: states are relative to its route's origin (env spacing 0),
+so no learned input sees which tile it is on. Each limb gets a contact sensor
+on each route; whether it presses there is the world model's auxiliary
+contact label.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import re
 
 import torch
 from hbold.asset_zoo.robots.g1_hook import g1_hook_constants as g1
-from hbold.data import LIMBS
+from hbold.asset_zoo.routes import kilter
+from hbold.data import LIMBS, route_path
 from hbold.tasks.goal.goal_env_cfg import contact_sensors
 from hbold.tasks.goal.mdp.commands import FOOT_N, HOOK_N
 from hbold.tasks.motion_tracking.mdp.commands import start_weights
 from hbold.tasks.motion_tracking.config.g1.env_cfgs import unitree_g1_motion_tracking_env_cfg
+from mjlab.entity import EntityCfg
 from mjlab.managers.event_manager import RecomputeLevel
 from mjlab.scene import Scene
 from mjlab.sim import Simulation, SimulationCfg
@@ -30,6 +36,7 @@ from .mdp import LIMB_BODIES
 PRESS_N = (HOOK_N, HOOK_N, FOOT_N, FOOT_N)  # N a hook, a foot, must press on the route to count as on it
 JOINT_OFFSET = 0.01  # rad, the encoder offsets' randomized half-range (TrackingSim._randomize_context)
 CONTACT_MAXMATCH = 128
+ROUTE_TILE = 10.0  # m between routes along y: far past a board's width and a robot's reach
 FAIL_ALPHA, FAIL_LAMBDA, FAIL_KERNEL, FAIL_UNIFORM = 0.001, 0.8, 3, 0.5
 """hbold's PPO start sampling (mjlab's adaptive sampler with hbold's start_weights):
 the per-step decay of the failure and visit averages, the kernel spreading a
@@ -37,8 +44,9 @@ bin's failures over the bins before it, and the flat share of starts."""  # rout
 
 
 def climb_physics(clip_id: str) -> SimulationCfg:
-    """hbold's physics settings for the clip, with room for the route sensors."""
-    physics = unitree_g1_motion_tracking_env_cfg(clip_id).sim
+    """hbold's physics settings (the first clip's: they are not per route),
+    with room for the route sensors."""
+    physics = unitree_g1_motion_tracking_env_cfg(clip_id.split(",")[0]).sim
     physics.contact_sensor_maxmatch = CONTACT_MAXMATCH
     return physics
 
@@ -87,13 +95,18 @@ class ClimbSim(TrackingSim):
         if start_sampler not in ("return", "failure_rate"):
             raise ValueError(f"unknown start sampler {start_sampler!r}")
         self.clip_id, self.start_sampler = clip_id, start_sampler
+        self.clips = clip_id.split(",")
+        if len(self.clips) != len(motion.clip_len):
+            raise ValueError(f"{len(self.clips)} routes for {len(motion.clip_len)} motion clips")
+        self.route_origin = torch.zeros(len(self.clips), 3, device=sim_cfg.device)
+        self.route_origin[:, 1] = ROUTE_TILE * torch.arange(len(self.clips), device=sim_cfg.device)
         nb, dev = motion.num_bins, sim_cfg.device
         self.bin_fail = torch.zeros(nb, device=dev)
         self.bin_visit = torch.zeros(nb, device=dev)
         kernel = torch.tensor([FAIL_LAMBDA**i for i in range(FAIL_KERNEL)], device=dev)
         self.fail_kernel = kernel / kernel.sum()
         super().__init__(sim_cfg, num_envs, motion, mdp, **kwargs)
-        self.route_sensors = [self.scene[f"{limb}_route"] for limb in LIMBS]
+        self.route_sensors = [[self.scene[f"{limb}_{e}"] for e in self._routes()] for limb in LIMBS]
         self.press_n = torch.tensor(PRESS_N, device=self.device)
 
     def sample_frames(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -117,10 +130,26 @@ class ClimbSim(TrackingSim):
             self.bin_fail = FAIL_ALPHA * failed + (1 - FAIL_ALPHA) * self.bin_fail
         return out
 
+    def _routes(self) -> list[str]:
+        """The route entities' names, clip k's route k: hbold's "route" first."""
+        return ["route", *(f"route{k}" for k in range(1, len(self.clips)))]
+
+    def _origin(self, env_ids, frames: torch.Tensor) -> torch.Tensor:
+        return self.scene.env_origins[env_ids] + self.route_origin[self.motion.clip_id[frames]]
+
     def _build_scene(self, num_envs: int):
-        scene_cfg = unitree_g1_motion_tracking_env_cfg(self.clip_id).scene
+        scene_cfg = unitree_g1_motion_tracking_env_cfg(self.clips[0]).scene
         scene_cfg.num_envs, scene_cfg.env_spacing = num_envs, 0.0
-        scene_cfg.sensors = (*scene_cfg.sensors, *contact_sensors(LIMB_BODIES)[: len(LIMB_BODIES)])
+        sensors = []
+        for k, name in enumerate(self._routes()):
+            if k:
+                route = kilter.get_route_cfg(kilter.load(route_path(self.clips[k])))
+                route.init_state = EntityCfg.InitialStateCfg(pos=tuple(self.route_origin[k].tolist()))
+                scene_cfg.entities[name] = route
+            for c in contact_sensors(LIMB_BODIES)[: len(LIMB_BODIES)]:
+                second = dataclasses.replace(c.secondary, entity=name)
+                sensors.append(dataclasses.replace(c, name=f"{c.name}{k or ''}", secondary=second))
+        scene_cfg.sensors = (*scene_cfg.sensors, *sensors)
         scene = Scene(scene_cfg, device=self.device)
         sim = Simulation(num_envs=num_envs, cfg=self.cfg.physics, model=scene.compile(), device=self.device)
         scene.initialize(sim.mj_model, sim.model, sim.data)
@@ -145,9 +174,8 @@ class ClimbSim(TrackingSim):
         return pd_action_bounds(self.sim.mj_model, self.default_q, self.alpha)
 
     def _labels(self) -> dict:
-        """(N, 4) each limb presses on the route harder than its newtons."""
+        """(N, 4) each limb presses on the routes harder than its newtons."""
         newtons = []
-        for sensor in self.route_sensors:
-            d = sensor.data
-            newtons.append((d.force.norm(dim=-1) * (d.found > 0)).sum(-1))
+        for sensors in self.route_sensors:
+            newtons.append(sum((s.data.force.norm(dim=-1) * (s.data.found > 0)).sum(-1) for s in sensors))
         return {"contact": torch.stack(newtons, -1) > self.press_n}

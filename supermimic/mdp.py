@@ -106,7 +106,7 @@ class MDP:
         """What the task's heads share of a state, computed once a step (none here)."""
         return ()
 
-    def wm_features(self, S, F=()) -> torch.Tensor:
+    def wm_features(self, S, F=(), f=None) -> torch.Tensor:
         return S[0].new_zeros(*S[0].shape[:-1], 0)
 
     def schedule(self, env_steps: int) -> None:

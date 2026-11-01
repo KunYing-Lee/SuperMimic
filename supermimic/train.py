@@ -52,7 +52,7 @@ parser.add_argument("--activation_checkpoint", action=argparse.BooleanOptionalAc
 parser.add_argument("--headless", action="store_true", help="accepted for command compatibility; training is headless")
 parser.add_argument("--task", default="lafan", choices=["lafan", "climb"],
                     help="lafan: flat-ground tracking of --motion_dir; climb: the hooked G1 on a Kilter route (hbold)")
-parser.add_argument("--clip", type=str, default=None, help="climb: the Kilter clip id under hbold's data directory")
+parser.add_argument("--clip", type=str, default=None, help="climb: the Kilter clip id under hbold's data directory, or several joined by commas (one route each)")
 parser.add_argument("--hbold_data", type=str, default=None, help="climb: hbold's data directory (else HBOLD_DATA)")
 parser.add_argument("--njmax", type=int, default=None,
                     help="climb: constraint rows per world (default hbold's 1500; Phase 2 measured a peak of 187)")
@@ -159,7 +159,7 @@ def maybe_checkpoint(function, *inputs):
 
 
 def _wm_step(S, a, xi, f1):
-    predicted, contact = wm.predict(S, a, normalize_xi(xi), mdp.wm_features(S))
+    predicted, contact = wm.predict(S, a, normalize_xi(xi), mdp.wm_features(S, f=f1 - 1))
     if mdp.analytic_termination:  # the task's cuts are computed, not learned
         return predicted, contact.new_zeros(contact.shape[:-1]), contact
     logits = wm.termination_logits(mdp.termination_features(predicted, f1, mdp.goal(f1, K, predicted)))
@@ -198,7 +198,7 @@ def _imag_step(S, o_hist, a_prev, f, xi, xi_n, g, aux, F):
     """F: the task's shared features of S (MDP.features), carried so each imagined
     state's are computed once."""
     a = pi(o_hist, g)
-    S1 = wm.step(S, a, xi_n, mdp.wm_features(S, F))
+    S1 = wm.step(S, a, xi_n, mdp.wm_features(S, F, f))
     f1 = f + 1
     F1 = mdp.features(S1)
     o1 = mdp.add_noise(mdp.obs(S1, a, xi, f1))
@@ -369,7 +369,7 @@ def collect(n_steps: int, stats: dict):
         buffer.add(out)
         ok = out["valid"]
         S0, S1 = unflatten_state(out["s"][ok]), unflatten_state(out["s1"][ok])
-        wm.in_norm.update(wm.inputs(S0, out["a"][ok], normalize_xi(out["xi"][ok]), mdp.wm_features(S0)))
+        wm.in_norm.update(wm.inputs(S0, out["a"][ok], normalize_xi(out["xi"][ok]), mdp.wm_features(S0, f=out["f"][ok])))
         wm.out_norm.update(wm.targets(S0, S1))
         sim_steps += args.num_envs
         stats["r"].append(out["r"].mean() / REW_SCALE)

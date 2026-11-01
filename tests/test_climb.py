@@ -1,7 +1,8 @@
 """The climb's simulator and MDP on a toy route (one bar, one facet) and a made-up
 motion, on CPU: forward kinematics against the file and the simulator, the
 task's state through a step, the cuts, the PD-target bounds, and the world
-model's route features. Needs humanoid_boldering's hbold (skipped without it)."""
+model's route features; and two clips on two routes in one simulator. Needs
+humanoid_boldering's hbold (skipped without it)."""
 
 from __future__ import annotations
 
@@ -22,17 +23,18 @@ except ImportError:  # pragma: no cover - the flat task does not need hbold
 FRAMES, ENVS, CLIP = 120, 4, "toy"
 
 
-def _write_toy_clip(root: Path) -> None:
+def _write_toy_clip(root: Path, name: str = CLIP, bar_y: float = 0.2) -> None:
     """route.json and a motion.npz: the robot standing in front of the board,
-    its joints swaying, the feet bearing for the first half."""
+    its joints swaying, the feet bearing for the first half. `bar_y`: where
+    the route's one bar sits across the board."""
     from hbold.asset_zoo.robots.g1_hook import g1_hook_constants as g1
 
-    clip = root / "kilter" / CLIP
+    clip = root / "kilter" / name
     clip.mkdir(parents=True)
-    bar = {"hold": "a", "pos": [0.3, 0.2, 1.4], "axis": [0.0, -1.0, 0.0], "normal": [-1.0, 0.0, 0.0]}
+    bar = {"hold": "a", "pos": [0.3, bar_y, 1.4], "axis": [0.0, -1.0, 0.0], "normal": [-1.0, 0.0, 0.0]}
     facet = {"pos": [0.6, 0.0, 1.0], "rot": np.eye(3).tolist(), "half": [0.2, 1.0, 1.0]}
     size = {k: getattr(kilter.BAR, k) for k in ("radius", "half_length", "out", "post_radius", "facet_thickness")}
-    doc = {"clip": CLIP, "scale": 1.0, "angle_deg": 0.0, "offset": [0.0, 0.0, 0.0], "bar": size,
+    doc = {"clip": name, "scale": 1.0, "angle_deg": 0.0, "offset": [0.0, 0.0, 0.0], "bar": size,
            "facets": [facet], "bars": [bar], "meta": {"tool": "test"}}
     (clip / "route.json").write_text(json.dumps(doc))
     route = kilter.load(clip / "route.json")
@@ -144,6 +146,63 @@ class ClimbTests(unittest.TestCase):
         self.assertEqual(feats.shape, (2, self.mdp.wm_extra_dim))
         feats.square().sum().backward()
         self.assertTrue(torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0)
+
+
+@unittest.skipIf(kilter is None, "hbold is not installed")
+class TwoRouteTests(unittest.TestCase):
+    """Clip "toy" on route 0 and "toy2" (its bar elsewhere) on route 1."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        _write_toy_clip(root)
+        _write_toy_clip(root, "toy2", bar_y=-0.3)
+        import hbold.data
+
+        hbold.data.DATA = root
+        from supermimic.climb.parts import climb_parts
+        from supermimic.climb.sim import ClimbSim, climb_physics
+        from supermimic.env import make_sim
+
+        clips = f"{CLIP},toy2"
+        cfg = make_sim("cpu")
+        cfg.physics = climb_physics(clips)
+        cls.kin, cls.motion, cls.mdp = climb_parts(clips, "cpu")
+        cls.env = ClimbSim(cfg, ENVS, cls.motion, cls.mdp, clip_id=clips)
+        cls.only2 = climb_parts("toy2", "cpu")[2]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_each_clip_plays_on_its_own_route_tile(self):
+        from supermimic.climb.sim import ROUTE_TILE
+
+        frames = torch.tensor([10, 40, FRAMES + 10, FRAMES + 40])
+        self.env.reset(torch.arange(ENVS), frames)
+        self.env.refresh()
+        S = self.env.state()
+        for x, ref in zip(S, self.motion.ref_state(frames)):
+            torch.testing.assert_close(x, ref, atol=1e-5, rtol=0)
+        y = self.env.robot.data.root_link_pos_w[:, 1] - self.motion.ref_state(frames)[0][:, 1]
+        torch.testing.assert_close(y, torch.tensor([0.0, 0.0, ROUTE_TILE, ROUTE_TILE]), atol=1e-5, rtol=0)
+        m = self.env.sim.mj_model
+        bar = [m.geom(f"{e}/bar_a").id for e in ("route", "route1")]
+        self.env.sim.forward()
+        at = self.env.sim.data.geom_xpos[0, bar]
+        torch.testing.assert_close(at[1] - at[0], torch.tensor([0.0, ROUTE_TILE - 0.5, 0.0]), atol=1e-5, rtol=0)
+        out = self.env.step(torch.zeros(ENVS, 29))
+        self.assertTrue(out["valid"].all() and torch.isfinite(out["r"]).all())
+        self.assertEqual(out["contact"].shape, (ENVS, 4))
+
+    def test_a_state_sees_only_its_own_route(self):
+        f = torch.tensor([FRAMES + 3, FRAMES + 50])
+        S = self.motion.ref_state(f)
+        torch.testing.assert_close(self.mdp.wm_features(S, f=f), self.only2.wm_features(S, f=f - FRAMES))
+        self.assertFalse(torch.allclose(self.mdp.wm_features(S, f=f), self.mdp.wm_features(S, f=f - FRAMES)))
+        with self.assertRaises(ValueError):
+            self.mdp.wm_features(S)
 
 
 if __name__ == "__main__":
