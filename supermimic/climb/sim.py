@@ -17,6 +17,7 @@ from hbold.asset_zoo.robots.g1_hook import g1_hook_constants as g1
 from hbold.data import LIMBS
 from hbold.tasks.goal.goal_env_cfg import contact_sensors
 from hbold.tasks.goal.mdp.commands import FOOT_N, HOOK_N
+from hbold.tasks.motion_tracking.mdp.commands import start_weights
 from hbold.tasks.motion_tracking.config.g1.env_cfgs import unitree_g1_motion_tracking_env_cfg
 from mjlab.managers.event_manager import RecomputeLevel
 from mjlab.scene import Scene
@@ -28,7 +29,11 @@ from .mdp import LIMB_BODIES
 
 PRESS_N = (HOOK_N, HOOK_N, FOOT_N, FOOT_N)  # N a hook, a foot, must press on the route to count as on it
 JOINT_OFFSET = 0.01  # rad, the encoder offsets' randomized half-range (TrackingSim._randomize_context)
-CONTACT_MAXMATCH = 128  # route sensors' contact matches per world; the hooks' convex parts make many
+CONTACT_MAXMATCH = 128
+FAIL_ALPHA, FAIL_LAMBDA, FAIL_KERNEL, FAIL_UNIFORM = 0.001, 0.8, 3, 0.5
+"""hbold's PPO start sampling (mjlab's adaptive sampler with hbold's start_weights):
+the per-step decay of the failure and visit averages, the kernel spreading a
+bin's failures over the bins before it, and the flat share of starts."""  # route sensors' contact matches per world; the hooks' convex parts make many
 
 
 def climb_physics(clip_id: str) -> SimulationCfg:
@@ -73,11 +78,44 @@ def pd_action_bounds(m, default_q: torch.Tensor, alpha: torch.Tensor) -> tuple[t
 
 
 class ClimbSim(TrackingSim):
-    def __init__(self, sim_cfg, num_envs: int, motion, mdp, clip_id: str, **kwargs):
-        self.clip_id = clip_id
+    _EPISODE_FIELDS = (*TrackingSim._EPISODE_FIELDS, "bin_fail", "bin_visit")
+
+    def __init__(self, sim_cfg, num_envs: int, motion, mdp, clip_id: str, start_sampler: str = "return", **kwargs):
+        """start_sampler: "return", SuperMimic's (bins where returns are low), or
+        "failure_rate", hbold's PPO task's (bins where episodes fail most often
+        for the steps spent there)."""
+        if start_sampler not in ("return", "failure_rate"):
+            raise ValueError(f"unknown start sampler {start_sampler!r}")
+        self.clip_id, self.start_sampler = clip_id, start_sampler
+        nb, dev = motion.num_bins, sim_cfg.device
+        self.bin_fail = torch.zeros(nb, device=dev)
+        self.bin_visit = torch.zeros(nb, device=dev)
+        kernel = torch.tensor([FAIL_LAMBDA**i for i in range(FAIL_KERNEL)], device=dev)
+        self.fail_kernel = kernel / kernel.sum()
         super().__init__(sim_cfg, num_envs, motion, mdp, **kwargs)
         self.route_sensors = [self.scene[f"{limb}_route"] for limb in LIMBS]
         self.press_n = torch.tensor(PRESS_N, device=self.device)
+
+    def sample_frames(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.start_sampler == "return":
+            return super().sample_frames(n)
+        m = self.motion
+        p = start_weights(self.bin_fail, self.bin_visit, FAIL_UNIFORM, self.fail_kernel)
+        bins = torch.multinomial(p, n, replacement=True)
+        start = m.bin_start[bins]
+        end = torch.minimum(start + 50, m.clip_end[m.bin_clip[bins]])
+        return start + (torch.rand(n, device=self.device) * (end - start).float()).long(), bins
+
+    def step(self, a: torch.Tensor) -> dict:
+        out = super().step(a)
+        if self.start_sampler == "failure_rate":  # this step's visits and failures, by bin, into the averages
+            nb = self.motion.num_bins
+            bins = self.motion.frame_bin[out["f"]]
+            here = torch.bincount(bins, minlength=nb).float()
+            failed = torch.bincount(bins[out["term"]], minlength=nb).float()
+            self.bin_visit = FAIL_ALPHA * here + (1 - FAIL_ALPHA) * self.bin_visit
+            self.bin_fail = FAIL_ALPHA * failed + (1 - FAIL_ALPHA) * self.bin_fail
+        return out
 
     def _build_scene(self, num_envs: int):
         scene_cfg = unitree_g1_motion_tracking_env_cfg(self.clip_id).scene

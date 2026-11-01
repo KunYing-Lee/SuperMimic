@@ -119,6 +119,24 @@ class ClimbTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(low).all() and torch.isfinite(high).all())
         self.assertTrue((low < 0).all() and (high > 0).all())
 
+    def test_failure_rate_starts_follow_where_episodes_fail(self):
+        from supermimic.climb.sim import ClimbSim
+
+        env = object.__new__(ClimbSim)
+        env.motion, env.device, env.start_sampler = self.motion, "cpu", "failure_rate"
+        nb = self.motion.num_bins
+        env.bin_visit = torch.ones(nb)
+        env.bin_fail = torch.zeros(nb)
+        env.bin_fail[1] = 1.0
+        from supermimic.climb.sim import FAIL_KERNEL, FAIL_LAMBDA
+
+        k = torch.tensor([FAIL_LAMBDA**i for i in range(FAIL_KERNEL)])
+        env.fail_kernel = k / k.sum()
+        frames, bins = env.sample_frames(4000)
+        share = torch.bincount(bins, minlength=nb).float() / 4000
+        self.assertGreater(float(share[1]), float(share[0]))  # the failing bin draws more than a flat share
+        self.assertTrue(bool((frames <= self.motion.clip_end[0] - 1).all()))
+
     def test_the_route_features_are_differentiable_in_the_state(self):
         p, R, v, w, q, qd = (x.clone() for x in self.motion.ref_state(torch.tensor([3, 4])))
         p.requires_grad_(True)

@@ -57,6 +57,8 @@ parser.add_argument("--hbold_data", type=str, default=None, help="climb: hbold's
 parser.add_argument("--njmax", type=int, default=None,
                     help="climb: constraint rows per world (default hbold's 1500; Phase 2 measured a peak of 187)")
 parser.add_argument("--nconmax", type=int, default=None, help="climb: contacts per world (default hbold's 256)")
+parser.add_argument("--start_sampler", default="return", choices=["return", "failure_rate"],
+                    help="climb: SuperMimic's return-based starts, or hbold PPO's failure-rate starts")
 args = parser.parse_args()
 if args.task == "climb" and not args.clip:
     parser.error("--task climb needs --clip")
@@ -338,7 +340,8 @@ def policy_update():
 # ------------------------------------------------------------------------------------------------
 sim_kwargs = dict(gamma=args.gamma, max_episode_steps=args.max_episode_steps, reset_noise=args.reset_noise)
 if args.task == "climb":
-    env = ClimbSim(sim_cfg, args.num_envs, motion, mdp, clip_id=args.clip, **sim_kwargs)
+    env = ClimbSim(sim_cfg, args.num_envs, motion, mdp, clip_id=args.clip, start_sampler=args.start_sampler,
+                   **sim_kwargs)
     replay_extra = {"aux": (mdp.aux_dim, torch.float32), "contact": (mdp.contact_dim, torch.bool)}
 else:
     env = TrackingSim(sim_cfg, args.num_envs, motion, mdp, **sim_kwargs)
