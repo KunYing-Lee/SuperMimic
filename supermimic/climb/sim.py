@@ -87,6 +87,7 @@ def pd_action_bounds(m, default_q: torch.Tensor, alpha: torch.Tensor) -> tuple[t
 
 class ClimbSim(TrackingSim):
     _EPISODE_FIELDS = (*TrackingSim._EPISODE_FIELDS, "bin_fail", "bin_visit")
+    _OPTIONAL_EPISODE_FIELDS = ("bin_fail", "bin_visit")  # the failure-rate starts': older runs have none
 
     def __init__(self, sim_cfg, num_envs: int, motion, mdp, clip_id: str, start_sampler: str = "return", **kwargs):
         """start_sampler: "return", SuperMimic's (bins where returns are low), or

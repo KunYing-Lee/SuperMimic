@@ -361,6 +361,7 @@ class TrackingSim:
         "done_eval", "failed_eval", "aux",
     )
     _TARGET_FIELDS = ("joint_pos_target", "joint_vel_target", "joint_effort_target")
+    _OPTIONAL_EPISODE_FIELDS = ()  # a checkpoint may predate these: they keep their fresh values
 
     def state_dict(self) -> dict:
         """Snapshot simulator integration, randomized model, and sampler state."""
@@ -386,6 +387,8 @@ class TrackingSim:
             if state[name] != value:
                 raise ValueError(f"Environment checkpoint {name} mismatch: {state[name]!r} != {value!r}")
         for name in self._EPISODE_FIELDS:
+            if name in self._OPTIONAL_EPISODE_FIELDS and name not in state["episodes"]:
+                continue
             getattr(self, name).copy_(state["episodes"][name])
         self._apply_context(torch.arange(self.N, device=self.device))
         for name in self._integration_fields:
