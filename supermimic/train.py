@@ -59,6 +59,14 @@ parser.add_argument("--njmax", type=int, default=None,
 parser.add_argument("--nconmax", type=int, default=None, help="climb: contacts per world (default hbold's 256)")
 parser.add_argument("--start_sampler", default="return", choices=["return", "failure_rate"],
                     help="climb: SuperMimic's return-based starts, or hbold PPO's failure-rate starts")
+parser.add_argument("--soft_cut_temp", type=float, default=None,
+                    help="climb: imagined off-hold cuts keep their value but take the gradient of sigmoids of "
+                         "(limb distance - cut) / this temperature in m; default the hard cut's (no gradient)")
+parser.add_argument("--soft_cut_timer_temp", type=float, default=0.1,
+                    help="climb, with --soft_cut_temp: the same for the off-hold timer against its tolerance, in s")
+parser.add_argument("--fine_tune", action="store_true",
+                    help="with --resume: allow other code and the soft-cut flags (and flags the saved run predates, "
+                         "at their defaults); the run continues from the checkpoint's full state")
 args = parser.parse_args()
 if args.task == "climb" and not args.clip:
     parser.error("--task climb needs --clip")
@@ -136,7 +144,13 @@ start_it, wall_offset, sim_steps, step_acc = 0, 0.0, 0, 0.0
 resume_ck = None
 if args.resume:
     resume_ck = torch.load(args.resume, map_location="cpu", weights_only=False)
-    validate_resume(resume_ck, run_manifest)
+    if args.fine_tune:
+        saved = resume_ck["manifest"]["args"]
+        allow = {"soft_cut_temp", "soft_cut_timer_temp"} | {
+            k for k in vars(args) if k not in saved and getattr(args, k) == parser.get_default(k)}
+        validate_resume(resume_ck, run_manifest, allow_args=allow, allow_source=True)
+    else:
+        validate_resume(resume_ck, run_manifest)
     wm.load_state_dict(resume_ck["wm"])
     pi.load_state_dict(resume_ck["pi"])
     critic.load_state_dict(resume_ck["critic"])
@@ -194,6 +208,11 @@ def _wm_err(S_hat, logits, contact_logits, s1, terminated, contact, mask):
     return loss, state_error[:, -1], aux_bce
 
 
+SOFT_CUT = None if args.soft_cut_temp is None else (args.soft_cut_temp, args.soft_cut_timer_temp)
+if SOFT_CUT is not None and args.task != "climb":
+    parser.error("--soft_cut_temp is the climb's")
+
+
 def _imag_step(S, o_hist, a_prev, f, xi, xi_n, g, aux, F):
     """F: the task's shared features of S (MDP.features), carried so each imagined
     state's are computed once."""
@@ -206,7 +225,7 @@ def _imag_step(S, o_hist, a_prev, f, xi, xi_n, g, aux, F):
     g1 = mdp.goal(f1, K, S1)
     r = mdp.reward(S1, f1, a, a_prev, F=F1)
     if mdp.analytic_termination:  # the simulator's own cuts on the imagined state
-        aux, cut = mdp.terminate(S1, f1, aux, F=F1)
+        aux, cut = mdp.terminate(S1, f1, aux, F=F1, soft=SOFT_CUT)
         d = cut.float()
     else:
         d = wm.termination_probability(mdp.termination_features(S1, f1, g1))

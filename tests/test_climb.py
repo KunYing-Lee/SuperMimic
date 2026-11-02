@@ -116,6 +116,47 @@ class ClimbTests(unittest.TestCase):
         _, cut = self.mdp.terminate((p - torch.tensor([0.0, 0.0, 0.5]), R, v, w, q, qd), f, aux)
         self.assertTrue(bool(cut))
 
+    def test_the_soft_off_hold_cut_is_the_hard_one_with_a_gradient(self):
+        from hbold.climb import limbs, task
+
+        from supermimic.climb.mdp import soft_off_hold, soft_timed_out
+
+        cut, dt = 0.05, 0.02
+        far = torch.tensor([[0.02, 0.049, 0.051, 0.2], [0.0, 0.3, 0.098, 0.102], [0.36, 0.0, 0.0, 0.0]])
+        turn = torch.tensor([[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.2], [0.0, 0.0, 0.0, 0.0]])
+        bearing = torch.tensor([[True, True, True, True], [True, False, True, False], [False] * 4])
+        hard = limbs.off_hold_step(torch.zeros(3, 4), far, turn, bearing, cut, task.FOOT_SCALE, task.FREE_CUT,
+                                   task.TURN_CUT, dt) > 0
+        timer = torch.tensor([[0.0, 0.48, 0.5, 0.52], [0.3, 0.6, 0.0, 0.0], [0.0] * 4])
+        errs = [float((soft_off_hold(far, turn, bearing, cut, temp) - hard.float()).abs().max())
+                for temp in (1e-2, 1e-3, 1e-5)]
+        self.assertTrue(errs[0] > errs[1] > errs[2] and errs[2] < 1e-6)  # the soft tests tend to the hard ones
+        torch.testing.assert_close(soft_timed_out(timer, task.HOLD_TOLERANCE, dt, 1e-5),
+                                   limbs.timed_out(timer, task.HOLD_TOLERANCE).float(), atol=1e-6, rtol=0)
+
+        # A foot the reference bears on its hold, 1.1 times its cut off it: its timer far from its
+        # tolerance (no cut) or one step from it (cut). The values are the simulator's either way,
+        # and either way the cut has a gradient in the state.
+        f = torch.tensor([5])
+        p, R, v, w, q, qd = self.motion.ref_state(f)
+        foot = int(self.motion.bearing[f][0].nonzero()[0])
+        self.assertGreaterEqual(foot, 2)
+        self.addCleanup(setattr, self.mdp, "hold_cut", self.mdp.hold_cut)
+        self.mdp.hold_cut = cut
+        for timer_s, cut_now in ((0.0, False), (task.HOLD_TOLERANCE, True)):
+            aux = torch.zeros(1, 8)
+            aux[0, foot] = timer_s
+            p_off = p.clone().requires_grad_(True)
+            S = (p_off + torch.tensor([0.0, 0.0, 1.1 * task.FOOT_SCALE * cut]), R, v, w, q, qd)
+            hard_aux, hard_cut = self.mdp.terminate(S, f, aux)
+            soft_aux, soft_cut = self.mdp.terminate(S, f, aux, soft=(0.01, 0.1))
+            self.assertEqual(bool(hard_cut), cut_now)
+            self.assertGreater(float(hard_aux[0, foot]), 0)
+            torch.testing.assert_close(soft_aux.detach(), hard_aux, atol=0, rtol=0)
+            self.assertEqual(float(soft_cut.detach()), float(hard_cut))
+            soft_cut.sum().backward()
+            self.assertGreater(float(p_off.grad[0, 2]), 0)  # higher, further off: nearer the cut
+
     def test_the_pd_bounds_hold_the_default_pose_and_are_finite(self):
         low, high = self.env.action_bounds()
         self.assertTrue(torch.isfinite(low).all() and torch.isfinite(high).all())

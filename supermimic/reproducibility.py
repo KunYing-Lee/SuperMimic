@@ -67,11 +67,14 @@ def manifest(repo: str, args, motion, robot_path: str, task_sources: list[Path] 
     }
 
 
-def validate_resume(checkpoint: dict, current: dict):
+def validate_resume(checkpoint: dict, current: dict, allow_args=(), allow_source: bool = False):
+    """A resume continues the saved run: the same code, packages, assets and
+    training configuration. A deliberate fine-tune may allow other code
+    (allow_source) and the arguments in allow_args to differ."""
     if checkpoint.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("This checkpoint lacks complete restart state; use a schema-v2 full last.pt checkpoint")
     previous = checkpoint["manifest"]
-    for field in ("source_sha256", "packages", "cuda"):
+    for field in ("packages", "cuda") if allow_source else ("source_sha256", "packages", "cuda"):
         if previous[field] != current[field]:
             raise ValueError(f"Resume {field} differs from the saved run")
     # Paths may move together with a repository; preserve file identities and hashes.
@@ -88,7 +91,7 @@ def validate_resume(checkpoint: dict, current: dict):
     new_assets = sorted((asset_id(p, current), digest) for p, digest in current["asset_sha256"].items())
     if old_assets != new_assets:
         raise ValueError("Resume motion/robot asset hashes differ from the saved run")
-    operational = {"resume", "log_dir", "motion_dir", "iterations", "ckpt_every", "log_every"}
+    operational = {"resume", "log_dir", "motion_dir", "iterations", "ckpt_every", "log_every", "fine_tune", *allow_args}
     old_args = {k: v for k, v in previous["args"].items() if k not in operational}
     new_args = {k: v for k, v in current["args"].items() if k not in operational}
     if old_args != new_args:
