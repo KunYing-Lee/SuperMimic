@@ -89,6 +89,8 @@ def validate_resume(checkpoint: dict, current: dict, allow_args=(), allow_source
         return str(p)
     old_assets = sorted((asset_id(p, previous), digest) for p, digest in previous["asset_sha256"].items())
     new_assets = sorted((asset_id(p, current), digest) for p, digest in current["asset_sha256"].items())
+    if allow_source:  # other code may sit elsewhere (another hbold checkout): the files' contents alone
+        old_assets, new_assets = sorted(d for _, d in old_assets), sorted(d for _, d in new_assets)
     if old_assets != new_assets:
         raise ValueError("Resume motion/robot asset hashes differ from the saved run")
     operational = {"resume", "log_dir", "motion_dir", "iterations", "ckpt_every", "log_every", "fine_tune", *allow_args}
