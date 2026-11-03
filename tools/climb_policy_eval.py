@@ -49,12 +49,11 @@ pi.eval()
 N = args.envs
 env = ClimbSim(cfg, N, motion, mdp, clip_id=args.clip, eval_mode=True)
 pi.action_low, pi.action_high = env.action_bounds()
-end = int(motion.clip_end[0])
-
-
 @torch.no_grad()
 def run(frames: torch.Tensor) -> dict:
-    """Every env from its start frame until its first cut or the clip's end."""
+    """Every env from its start frame until its first cut or its clip's end."""
+    end = motion.clip_end[motion.clip_id[frames]]
+    first = motion.clip_start[motion.clip_id[frames]]
     env.reset(torch.arange(N, device=DEV), frames)
     env.refresh()
     o = mdp.add_noise(mdp.obs(env.state(), env.a_prev, env.xi, env.f))
@@ -71,22 +70,29 @@ def run(frames: torch.Tensor) -> dict:
         c = torch.where(out["term"], torch.where(off, 1, torch.where(stay, 2, 0)), 3)
         cause = torch.where(ended, c, cause)
         alive &= ~out["done"]
-        env.f.clamp_(max=end - 1)  # an ended env steps on in eval mode; keep its frame inside the clip
+        env.f = torch.minimum(env.f, end - 1)  # an ended env steps on in eval mode; keep its frame inside the clip
         o = mdp.add_noise(mdp.obs(env.state(), env.a_prev, env.xi, env.f))
         obs = torch.cat((obs[:, 1:], o.unsqueeze(1)), 1)
     gained = (reached - frames).float()
     names = ["torso", "off_hold", "stayed", "clip_end"]
     return {
         "frames_gained_mean": float(gained.mean()), "frames_gained_median": float(gained.median()),
-        "pass_frame_share": float((reached >= args.pass_frame).float().mean()),
+        "pass_frame_share": float((reached - first >= args.pass_frame).float().mean()),
         "complete_share": float((reached >= end).float().mean()),
         "cause": {n: int((cause == k).sum()) for k, n in enumerate(names)},
     }
 
 
+def clip_runs(c: int) -> dict:
+    """Clip c from its first frame, and from uniform frames inside it."""
+    a, b = int(motion.clip_start[c]), int(motion.clip_end[c])
+    return {"from_t0": run(torch.full((N,), a, dtype=torch.long, device=DEV)),
+            "from_uniform": run(torch.randint(a, b - 1, (N,), device=DEV))}
+
+
+per_clip = {name: clip_runs(c) for c, name in enumerate(args.clip.split(","))}
 res = {"checkpoint": args.checkpoint, "off_hold_cut": args.off_hold_cut, "envs": N,
-       "from_t0": run(torch.zeros(N, dtype=torch.long, device=DEV)),
-       "from_uniform": run(torch.randint(0, end - 1, (N,), device=DEV))}
+       **next(iter(per_clip.values())), "clips": per_clip}
 print(json.dumps(res, indent=1))
 with open(args.out, "w") as f:
     json.dump(res, f, indent=1)
