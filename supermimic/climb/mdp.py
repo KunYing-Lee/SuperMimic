@@ -128,8 +128,11 @@ class ClimbMDP(MDP):
         bearing = m.bearing[f]
         off = limbs.off_hold_step(aux[:, :4], far, turn, bearing, self.hold_cut, task.FOOT_SCALE,
                                   task.FREE_CUT, task.TURN_CUT, CONTROL_DT)
+        # the hands' stayed test against the whole bar they left, where hbold has it
+        bar_test = {"bars": self.bars, "route": m.clip_id[f], "on_bar": task.STAY_ON_BAR} \
+            if hasattr(task, "STAY_ON_BAR") else {}
         on = limbs.stayed_step(aux[:, 4:], sites, m.left_pos[f], m.hold_pos[f], bearing, task.STAY_NEAR,
-                               task.STAY_GONE, CONTROL_DT)
+                               task.STAY_GONE, CONTROL_DT, **bar_test)
         low = tracking.anchor_z_off(bp[:, ANCHOR], m.body_p[f][:, ANCHOR], task.ANCHOR_Z_CUT)
         timed_off = limbs.timed_out(off, task.HOLD_TOLERANCE)
         rest = low | limbs.timed_out(on, task.STAY_TOLERANCE)
