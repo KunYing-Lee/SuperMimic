@@ -48,6 +48,19 @@ def soft_timed_out(timer_s, tolerance: float, dt: float, temp_s: float):
     return 1 - (1 - torch.sigmoid((timer_s - tolerance - dt / 2) / temp_s)).prod(-1)
 
 
+def soft_stayed(site, left, ref_site, bearing, near: float, gone: float, temp: float, bar_test: dict):
+    """(N, 4) a smooth stand-in for stayed_step's stayed test: a sigmoid of
+    (near - the limb's distance from the hold it left) / temp, where the
+    reference has gone and does not bear (those are the reference's, not the
+    policy's). bar_test: stayed_step's bars, route and on_bar, if any."""
+    dist = (site - left).square().sum(-1).sqrt()
+    if bar_test:
+        on_bar = torch.tensor(bar_test["on_bar"], device=site.device)
+        dist = torch.where(on_bar, geometry.to_bar_of(site, left, bar_test["bars"], bar_test["route"]), dist)
+    ref_gone = (ref_site - left).square().sum(-1).sqrt() > gone
+    return torch.sigmoid((near - dist) / temp) * (ref_gone & ~bearing)
+
+
 def straight_through(hard, soft):
     """hard's value with soft's gradient."""
     return hard + (soft - soft.detach())
@@ -115,12 +128,13 @@ class ClimbMDP(MDP):
         height, a limb off its hold (off_hold) or on the one it should have
         left (stayed) past their tolerances. aux: (B, 8) their timers.
 
-        soft: None, or (temp in m, temp in s) for imagination. The cut is then a
-        float with the hard cut's value but the gradient of a smooth off-hold
-        cut: each limb's off test and its timer's cut as sigmoids (soft_off_hold,
-        soft_timed_out), through the timers carried in aux. The values, timers
-        included, stay the simulator's; only the gradient says how near a limb
-        is to its cut."""
+        soft: None, or (temp in m, temp in s, stayed too) for imagination. The
+        cut is then a float with the hard cut's value but the gradient of a
+        smooth off-hold cut (and, with stayed too, a smooth stayed cut): each
+        limb's test and its timer's cut as sigmoids (soft_off_hold or
+        soft_stayed, soft_timed_out), through the timers carried in aux. The
+        values, timers included, stay the simulator's; only the gradient says
+        how near a limb is to its cut."""
         m = self.motion
         F = F or self.features(S)
         bp, sites = F[0], F[4]
@@ -138,11 +152,18 @@ class ClimbMDP(MDP):
         rest = low | limbs.timed_out(on, task.STAY_TOLERANCE)
         if soft is None:
             return torch.cat((off, on), -1), rest | timed_off
-        temp, temp_s = soft
+        temp, temp_s, stay_too = soft
         is_off = straight_through((off > 0).float(), soft_off_hold(far, turn, bearing, self.hold_cut, temp))
         off = (aux[:, :4] + CONTROL_DT) * is_off  # off_hold_step's timers, differentiable
         timed_off = straight_through(timed_off.float(), soft_timed_out(off, task.HOLD_TOLERANCE, CONTROL_DT, temp_s))
-        return torch.cat((off, on), -1), 1 - (1 - rest.float()) * (1 - timed_off)
+        if not stay_too:
+            return torch.cat((off, on), -1), 1 - (1 - rest.float()) * (1 - timed_off)
+        is_on = straight_through((on > 0).float(), soft_stayed(sites, m.left_pos[f], m.hold_pos[f], bearing,
+                                                               task.STAY_NEAR, task.STAY_GONE, temp, bar_test))
+        on = (aux[:, 4:] + CONTROL_DT) * is_on  # stayed_step's timers, differentiable
+        timed_on = straight_through(limbs.timed_out(on, task.STAY_TOLERANCE).float(),
+                                    soft_timed_out(on, task.STAY_TOLERANCE, CONTROL_DT, temp_s))
+        return torch.cat((off, on), -1), 1 - (1 - low.float()) * (1 - timed_off) * (1 - timed_on)
 
     def termination(self, S, f) -> torch.Tensor:
         raise NotImplementedError("the climb's cuts carry timers: use terminate(S, f, aux)")

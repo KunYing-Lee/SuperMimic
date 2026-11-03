@@ -149,13 +149,34 @@ class ClimbTests(unittest.TestCase):
             p_off = p.clone().requires_grad_(True)
             S = (p_off + torch.tensor([0.0, 0.0, 1.1 * task.FOOT_SCALE * cut]), R, v, w, q, qd)
             hard_aux, hard_cut = self.mdp.terminate(S, f, aux)
-            soft_aux, soft_cut = self.mdp.terminate(S, f, aux, soft=(0.01, 0.1))
+            soft_aux, soft_cut = self.mdp.terminate(S, f, aux, soft=(0.01, 0.1, True))
             self.assertEqual(bool(hard_cut), cut_now)
             self.assertGreater(float(hard_aux[0, foot]), 0)
             torch.testing.assert_close(soft_aux.detach(), hard_aux, atol=0, rtol=0)
             self.assertEqual(float(soft_cut.detach()), float(hard_cut))
             soft_cut.sum().backward()
             self.assertGreater(float(p_off.grad[0, 2]), 0)  # higher, further off: nearer the cut
+
+    def test_the_soft_stayed_cut_tends_to_the_hard_one_with_a_gradient(self):
+        from hbold.climb import limbs, task
+
+        from supermimic.climb.mdp import soft_stayed
+
+        left = torch.zeros(2, 4, 3)
+        ref = torch.zeros(2, 4, 3)
+        ref[:, :, 2] = 0.2  # the reference 20 cm gone from every hold
+        site = torch.zeros(2, 4, 3)
+        site[0, :, 0] = torch.tensor([0.02, 0.049, 0.051, 0.1])
+        site[1, :, 0] = 0.03
+        bearing = torch.tensor([[False] * 4, [False, True, False, True]])
+        hard = limbs.stayed_step(torch.zeros(2, 4), site, left, ref, bearing, task.STAY_NEAR, task.STAY_GONE, 0.02) > 0
+        errs = [float((soft_stayed(site, left, ref, bearing, task.STAY_NEAR, task.STAY_GONE, t, {}) - hard.float())
+                      .abs().max()) for t in (1e-2, 1e-3, 1e-5)]
+        self.assertTrue(errs[0] > errs[1] > errs[2] and errs[2] < 1e-6)
+        site.requires_grad_(True)
+        soft_stayed(site, left, ref, bearing, task.STAY_NEAR, task.STAY_GONE, 0.01, {}).sum().backward()
+        self.assertLess(float(site.grad[0, 0, 0]), 0)  # further from the old hold: less stayed
+        self.assertEqual(float(site.grad[1, 1].abs().sum()), 0.0)  # a bearing limb has no stayed test
 
     def test_the_pd_bounds_hold_the_default_pose_and_are_finite(self):
         low, high = self.env.action_bounds()

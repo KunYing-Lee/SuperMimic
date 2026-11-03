@@ -69,6 +69,9 @@ parser.add_argument("--clip_start_share", type=float, default=0.0,
 parser.add_argument("--opening_start_share", type=float, default=0.0,
                     help="share of each imagined batch started from replay states in a clip's first --opening_frames")
 parser.add_argument("--opening_frames", type=int, default=60)
+parser.add_argument("--soft_stay", action="store_true",
+                    help="climb, with --soft_cut_temp: the stayed cut's gradient too, from a sigmoid of "
+                         "(STAY_NEAR - the limb's distance from the hold it left) / the same temperature")
 parser.add_argument("--fine_tune", action="store_true",
                     help="with --resume: allow other code, the soft-cut and start-share flags (and flags the saved run predates, "
                          "at their defaults); the run continues from the checkpoint's full state")
@@ -151,7 +154,8 @@ if args.resume:
     resume_ck = torch.load(args.resume, map_location="cpu", weights_only=False)
     if args.fine_tune:
         saved = resume_ck["manifest"]["args"]
-        allow = {"soft_cut_temp", "soft_cut_timer_temp", "clip_start_share", "opening_start_share", "opening_frames"} | {
+        allow = {"soft_cut_temp", "soft_cut_timer_temp", "clip_start_share", "opening_start_share", "opening_frames",
+                 "soft_stay"} | {
             k for k in vars(args) if k not in saved and getattr(args, k) == parser.get_default(k)}
         validate_resume(resume_ck, run_manifest, allow_args=allow, allow_source=True)
     else:
@@ -213,7 +217,9 @@ def _wm_err(S_hat, logits, contact_logits, s1, terminated, contact, mask):
     return loss, state_error[:, -1], aux_bce
 
 
-SOFT_CUT = None if args.soft_cut_temp is None else (args.soft_cut_temp, args.soft_cut_timer_temp)
+SOFT_CUT = None if args.soft_cut_temp is None else (args.soft_cut_temp, args.soft_cut_timer_temp, args.soft_stay)
+if args.soft_stay and SOFT_CUT is None:
+    parser.error("--soft_stay needs --soft_cut_temp")
 if SOFT_CUT is not None and args.task != "climb":
     parser.error("--soft_cut_temp is the climb's")
 
