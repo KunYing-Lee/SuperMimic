@@ -89,13 +89,18 @@ class ClimbSim(TrackingSim):
     _EPISODE_FIELDS = (*TrackingSim._EPISODE_FIELDS, "bin_fail", "bin_visit")
     _OPTIONAL_EPISODE_FIELDS = ("bin_fail", "bin_visit")  # the failure-rate starts': older runs have none
 
-    def __init__(self, sim_cfg, num_envs: int, motion, mdp, clip_id: str, start_sampler: str = "return", **kwargs):
+    def __init__(self, sim_cfg, num_envs: int, motion, mdp, clip_id: str, start_sampler: str = "return",
+                 clip_start_share: float = 0.0, **kwargs):
         """start_sampler: "return", SuperMimic's (bins where returns are low), or
         "failure_rate", hbold's PPO task's (bins where episodes fail most often
-        for the steps spent there)."""
+        for the steps spent there). clip_start_share: the share of sampled
+        starts put instead at a clip's first frame (a clip drawn uniformly), as
+        the climb is evaluated."""
         if start_sampler not in ("return", "failure_rate"):
             raise ValueError(f"unknown start sampler {start_sampler!r}")
-        self.clip_id, self.start_sampler = clip_id, start_sampler
+        if not 0.0 <= clip_start_share <= 1.0:
+            raise ValueError("clip_start_share is a share")
+        self.clip_id, self.start_sampler, self.clip_start_share = clip_id, start_sampler, clip_start_share
         self.clips = clip_id.split(",")
         if len(self.clips) != len(motion.clip_len):
             raise ValueError(f"{len(self.clips)} routes for {len(motion.clip_len)} motion clips")
@@ -111,6 +116,16 @@ class ClimbSim(TrackingSim):
         self.press_n = torch.tensor(PRESS_N, device=self.device)
 
     def sample_frames(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
+        frames, bins = self._sample_frames(n)
+        if self.clip_start_share > 0:
+            m = self.motion
+            first = torch.rand(n, device=self.device) < self.clip_start_share
+            clip = torch.randint(len(m.clip_len), (n,), device=self.device)
+            frames = torch.where(first, m.clip_start[clip], frames)
+            bins = torch.where(first, m.frame_bin[frames], bins)
+        return frames, bins
+
+    def _sample_frames(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
         if self.start_sampler == "return":
             return super().sample_frames(n)
         m = self.motion

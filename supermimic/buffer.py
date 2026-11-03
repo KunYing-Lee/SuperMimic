@@ -83,8 +83,12 @@ class ReplayBuffer:
         out["mask"] = out["mask"] * out["valid"].float()
         return out
 
-    def sample_starts(self, B: int, hist: int, clip_end_by_frame: torch.Tensor | None = None, horizon: int = 0):
-        """Uniform valid start states; history is repeated only at episode starts."""
+    def sample_starts(self, B: int, hist: int, clip_end_by_frame: torch.Tensor | None = None, horizon: int = 0,
+                      prefer_by_frame: torch.Tensor | None = None, prefer_share: float = 0.0):
+        """Uniform valid start states; history is repeated only at episode starts.
+        prefer_by_frame (per reference frame, bool) and prefer_share: that share
+        of the batch drawn uniformly from the valid states at preferred frames
+        (where there are any), the rest from all valid states."""
         if self.size == 0:
             raise ValueError("Cannot sample empty replay")
         dev = self.storage_device
@@ -98,7 +102,14 @@ class ReplayBuffer:
         eligible = valid.flatten().nonzero().flatten()
         if eligible.numel() == 0:
             raise ValueError("Replay contains no start state with complete observation history and imagination horizon")
-        flat = eligible[torch.randint(eligible.numel(), (B,), device=dev)]
+        n_pref = 0
+        if prefer_by_frame is not None and prefer_share > 0:
+            frames = self.data["f"][chronological_rows].flatten()[eligible]
+            preferred = eligible[prefer_by_frame[frames]]
+            n_pref = round(prefer_share * B) if preferred.numel() else 0
+        flat = eligible[torch.randint(eligible.numel(), (B - n_pref,), device=dev)]
+        if n_pref:
+            flat = torch.cat((preferred[torch.randint(preferred.numel(), (n_pref,), device=dev)], flat))
         age, env = flat // self.N, flat % self.N
         row = self._row(age)
         ep_step = self.data["ep_step"][row, env].long()

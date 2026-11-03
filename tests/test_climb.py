@@ -166,7 +166,7 @@ class ClimbTests(unittest.TestCase):
         from supermimic.climb.sim import ClimbSim
 
         env = object.__new__(ClimbSim)
-        env.motion, env.device, env.start_sampler = self.motion, "cpu", "failure_rate"
+        env.motion, env.device, env.start_sampler, env.clip_start_share = self.motion, "cpu", "failure_rate", 0.0
         nb = self.motion.num_bins
         env.bin_visit = torch.ones(nb)
         env.bin_fail = torch.zeros(nb)
@@ -179,6 +179,20 @@ class ClimbTests(unittest.TestCase):
         share = torch.bincount(bins, minlength=nb).float() / 4000
         self.assertGreater(float(share[1]), float(share[0]))  # the failing bin draws more than a flat share
         self.assertTrue(bool((frames <= self.motion.clip_end[0] - 1).all()))
+
+    def test_a_share_of_starts_is_at_the_clip_start(self):
+        from supermimic.climb.sim import ClimbSim
+
+        env = object.__new__(ClimbSim)
+        env.motion, env.device, env.start_sampler, env.clip_start_share = self.motion, "cpu", "failure_rate", 0.3
+        nb = self.motion.num_bins
+        env.bin_visit, env.bin_fail = torch.ones(nb), torch.zeros(nb)
+        env.fail_kernel = torch.ones(1)
+        frames, bins = env.sample_frames(4000)
+        share = float((frames == 0).float().mean())
+        self.assertGreater(share, 0.25)
+        self.assertLess(share, 0.36)
+        torch.testing.assert_close(bins, self.motion.frame_bin[frames])
 
     def test_the_route_features_are_differentiable_in_the_state(self):
         p, R, v, w, q, qd = (x.clone() for x in self.motion.ref_state(torch.tensor([3, 4])))

@@ -64,8 +64,13 @@ parser.add_argument("--soft_cut_temp", type=float, default=None,
                          "(limb distance - cut) / this temperature in m; default the hard cut's (no gradient)")
 parser.add_argument("--soft_cut_timer_temp", type=float, default=0.1,
                     help="climb, with --soft_cut_temp: the same for the off-hold timer against its tolerance, in s")
+parser.add_argument("--clip_start_share", type=float, default=0.0,
+                    help="climb: share of simulator resets at a clip's first frame instead of the start sampler's")
+parser.add_argument("--opening_start_share", type=float, default=0.0,
+                    help="share of each imagined batch started from replay states in a clip's first --opening_frames")
+parser.add_argument("--opening_frames", type=int, default=60)
 parser.add_argument("--fine_tune", action="store_true",
-                    help="with --resume: allow other code and the soft-cut flags (and flags the saved run predates, "
+                    help="with --resume: allow other code, the soft-cut and start-share flags (and flags the saved run predates, "
                          "at their defaults); the run continues from the checkpoint's full state")
 args = parser.parse_args()
 if args.task == "climb" and not args.clip:
@@ -146,7 +151,7 @@ if args.resume:
     resume_ck = torch.load(args.resume, map_location="cpu", weights_only=False)
     if args.fine_tune:
         saved = resume_ck["manifest"]["args"]
-        allow = {"soft_cut_temp", "soft_cut_timer_temp"} | {
+        allow = {"soft_cut_temp", "soft_cut_timer_temp", "clip_start_share", "opening_start_share", "opening_frames"} | {
             k for k in vars(args) if k not in saved and getattr(args, k) == parser.get_default(k)}
         validate_resume(resume_ck, run_manifest, allow_args=allow, allow_source=True)
     else:
@@ -269,7 +274,7 @@ def wm_update():
 
 
 def sample_valid_starts(B: int):
-    return buffer.sample_starts(B, Hh, replay_clip_end, HZ)
+    return buffer.sample_starts(B, Hh, replay_clip_end, HZ, replay_opening, args.opening_start_share)
 
 
 PROFILE = bool(int(os.environ.get("SM_PROFILE", "0")))
@@ -360,7 +365,7 @@ def policy_update():
 sim_kwargs = dict(gamma=args.gamma, max_episode_steps=args.max_episode_steps, reset_noise=args.reset_noise)
 if args.task == "climb":
     env = ClimbSim(sim_cfg, args.num_envs, motion, mdp, clip_id=args.clip, start_sampler=args.start_sampler,
-                   **sim_kwargs)
+                   clip_start_share=args.clip_start_share, **sim_kwargs)
     replay_extra = {"aux": (mdp.aux_dim, torch.float32), "contact": (mdp.contact_dim, torch.bool)}
 else:
     env = TrackingSim(sim_cfg, args.num_envs, motion, mdp, **sim_kwargs)
@@ -368,6 +373,8 @@ else:
 buffer = ReplayBuffer(args.buffer_steps, args.num_envs, dev, args.replay_device, extra=replay_extra)
 pi.action_low, pi.action_high = env.action_bounds()
 replay_clip_end = motion.clip_end[motion.clip_id].to(buffer.storage_device)
+frames_in = torch.arange(motion.num_frames, device=dev) - motion.clip_start[motion.clip_id]
+replay_opening = (frames_in < args.opening_frames).to(buffer.storage_device)  # each frame: in its clip's opening
 print(f"Replay: {buffer.nbytes / 2**30:.3f} GiB on {buffer.storage_device}; learner {dev}, {args.precision}", flush=True)
 obs_hist = torch.zeros(args.num_envs, Hh, OBS_DIM, device=dev)
 

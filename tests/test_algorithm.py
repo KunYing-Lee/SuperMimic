@@ -77,6 +77,17 @@ class ReplayTests(unittest.TestCase):
         torch.testing.assert_close(sampled['mask'], torch.tensor([[1., 0., 0.]]).expand(5, -1))
         self.assertTrue(sampled['terminated'][:, 0].all())
 
+    def test_a_share_of_starts_comes_from_preferred_frames(self):
+        replay = ReplayBuffer(6, 1, 'cpu')
+        for t in range(6):
+            replay.add(transition(t))
+        prefer = torch.zeros(6, dtype=torch.bool)
+        prefer[4] = True
+        starts, _ = replay.sample_starts(40, 2, prefer_by_frame=prefer, prefer_share=0.5)
+        self.assertGreaterEqual(int((starts['f'] == 4).sum()), 20)
+        starts, _ = replay.sample_starts(40, 2, prefer_by_frame=torch.zeros(6, dtype=torch.bool), prefer_share=0.5)
+        self.assertEqual(len(starts['f']), 40)  # nothing preferred: all uniform
+
     def test_eligible_sampling_is_explicit_and_empty_set_fails(self):
         replay = ReplayBuffer(5, 1, 'cpu')
         for t in range(5):
