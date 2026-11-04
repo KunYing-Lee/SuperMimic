@@ -12,6 +12,12 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+CLIMB_PRESETS = {
+    # the fine-tunes of 2026-11-03/04: opening starts in the simulator and in imagination, and the gradients of
+    # smooth off-hold and stayed cuts in imagination (each cut's value stays the simulator's)
+    "v2": {"clip_start_share": 0.1, "opening_start_share": 0.25, "opening_frames": 60, "soft_cut_temp": 0.01,
+           "soft_cut_timer_temp": 0.1, "soft_stay": True},
+}
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_envs", type=int, default=4096)
 parser.add_argument("--reset_noise", action=argparse.BooleanOptionalAction, default=False,
@@ -72,12 +78,21 @@ parser.add_argument("--opening_frames", type=int, default=60)
 parser.add_argument("--soft_stay", action="store_true",
                     help="climb, with --soft_cut_temp: the stayed cut's gradient too, from a sigmoid of "
                          "(STAY_NEAR - the limb's distance from the hold it left) / the same temperature")
+parser.add_argument("--climb_preset", default=None, choices=sorted(CLIMB_PRESETS),
+                    help="climb: a named set of the flags above (explicit flags still win); v2 also needs hbold's "
+                         "bar-based stayed cut (task.STAY_ON_BAR)")
 parser.add_argument("--fine_tune", action="store_true",
                     help="with --resume: allow other code, the soft-cut and start-share flags (and flags the saved run predates, "
                          "at their defaults); the run continues from the checkpoint's full state")
 args = parser.parse_args()
 if args.task == "climb" and not args.clip:
     parser.error("--task climb needs --clip")
+if args.climb_preset:
+    if args.task != "climb":
+        parser.error("--climb_preset is the climb's")
+    for key, value in CLIMB_PRESETS[args.climb_preset].items():
+        if getattr(args, key) == parser.get_default(key):  # a flag given explicitly keeps its value
+            setattr(args, key, value)
 if args.hbold_data:
     os.environ["HBOLD_DATA"] = args.hbold_data  # before hbold.data reads it
 
@@ -130,6 +145,10 @@ if args.task == "climb":
     sim_cfg.physics.njmax = args.njmax or sim_cfg.physics.njmax
     sim_cfg.physics.nconmax = args.nconmax or sim_cfg.physics.nconmax
     kin, motion, mdp = climb_parts(args.clip, dev)
+    from hbold.climb import task as hbold_task
+
+    if args.climb_preset == "v2" and not hasattr(hbold_task, "STAY_ON_BAR"):
+        raise RuntimeError("--climb_preset v2 needs hbold's bar-based stayed cut (feat/stay-bar)")
     robot_path, task_sources = G1_HOOK_XML, sorted(Path(hbold.__file__).parent.rglob("*.py"))
 else:
     kin = G1Kinematics(dev)
@@ -155,7 +174,7 @@ if args.resume:
     if args.fine_tune:
         saved = resume_ck["manifest"]["args"]
         allow = {"soft_cut_temp", "soft_cut_timer_temp", "clip_start_share", "opening_start_share", "opening_frames",
-                 "soft_stay"} | {
+                 "soft_stay", "climb_preset"} | {
             k for k in vars(args) if k not in saved and getattr(args, k) == parser.get_default(k)}
         validate_resume(resume_ck, run_manifest, allow_args=allow, allow_source=True)
     else:
