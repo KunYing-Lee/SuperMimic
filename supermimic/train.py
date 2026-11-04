@@ -48,6 +48,8 @@ parser.add_argument("--precision", default="tf32", choices=["tf32", "fp32"])
 parser.add_argument("--device", default="cuda:0")
 parser.add_argument("--replay_device", default="cpu", help="exact float32 replay storage; samples move to --device")
 parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
+parser.add_argument("--compile_mode", default=None, choices=[None, "default", "reduce-overhead", "max-autotune"],
+                    help="torch.compile mode; reduce-overhead captures CUDA graphs")
 parser.add_argument("--activation_checkpoint", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--headless", action="store_true", help="accepted for command compatibility; training is headless")
 parser.add_argument("--task", default="lafan", choices=["lafan", "climb"],
@@ -217,7 +219,7 @@ def _critic_input(S, f, xi_n, g):
     return torch.cat((mdp.critic_features(S, f, xi_n), g), -1)
 
 
-compile_fn = torch.compile if args.compile else (lambda function: function)
+compile_fn = (lambda function: torch.compile(function, mode=args.compile_mode)) if args.compile else (lambda function: function)
 wm_rollout = compile_fn(_wm_rollout)
 wm_err = compile_fn(_wm_err)
 imag_step = compile_fn(_imag_step)
