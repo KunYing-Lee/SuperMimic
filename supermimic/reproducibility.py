@@ -93,7 +93,9 @@ def validate_resume(checkpoint: dict, current: dict, allow_args=(), allow_source
         old_assets, new_assets = sorted(d for _, d in old_assets), sorted(d for _, d in new_assets)
     if old_assets != new_assets:
         raise ValueError("Resume motion/robot asset hashes differ from the saved run")
-    operational = {"resume", "log_dir", "motion_dir", "iterations", "ckpt_every", "log_every", "fine_tune", *allow_args}
+    # arguments that change neither the run's data nor its gradients (activation checkpointing recomputes exactly)
+    operational = {"resume", "log_dir", "motion_dir", "iterations", "ckpt_every", "log_every", "fine_tune",
+                   "activation_checkpoint", *allow_args}
     old_args = {k: v for k, v in previous["args"].items() if k not in operational}
     new_args = {k: v for k, v in current["args"].items() if k not in operational}
     if old_args != new_args:
