@@ -78,6 +78,9 @@ parser.add_argument("--opening_frames", type=int, default=60)
 parser.add_argument("--soft_stay", action="store_true",
                     help="climb, with --soft_cut_temp: the stayed cut's gradient too, from a sigmoid of "
                          "(STAY_NEAR - the limb's distance from the hold it left) / the same temperature")
+parser.add_argument("--hold_cut_scale", type=float, default=1.0,
+                    help="climb: the off-hold cut's curriculum runs at env steps / this (0.25: 4x sooner; hbold's "
+                         "stages are PPO's, and SuperMimic takes 2.5 env steps an iteration)")
 parser.add_argument("--climb_preset", default=None, choices=sorted(CLIMB_PRESETS),
                     help="climb: a named set of the flags above (explicit flags still win); v2 also needs hbold's "
                          "bar-based stayed cut (task.STAY_ON_BAR)")
@@ -87,6 +90,8 @@ parser.add_argument("--fine_tune", action="store_true",
 args = parser.parse_args()
 if args.task == "climb" and not args.clip:
     parser.error("--task climb needs --clip")
+if args.hold_cut_scale <= 0:
+    parser.error("--hold_cut_scale must be positive")
 if args.climb_preset:
     if args.task != "climb":
         parser.error("--climb_preset is the climb's")
@@ -174,7 +179,7 @@ if args.resume:
     if args.fine_tune:
         saved = resume_ck["manifest"]["args"]
         allow = {"soft_cut_temp", "soft_cut_timer_temp", "clip_start_share", "opening_start_share", "opening_frames",
-                 "soft_stay", "climb_preset"} | {
+                 "soft_stay", "climb_preset", "hold_cut_scale"} | {
             k for k in vars(args) if k not in saved and getattr(args, k) == parser.get_default(k)}
         validate_resume(resume_ck, run_manifest, allow_args=allow, allow_source=True)
     else:
@@ -452,7 +457,7 @@ for it in range(start_it, args.iterations):
     for o in (opt_wm, opt_pi, opt_v):
         for gparam in o.param_groups:
             gparam["lr"] = lr
-    mdp.schedule(sim_steps // args.num_envs)  # a task's curriculum, by environment step
+    mdp.schedule(int(sim_steps // args.num_envs / args.hold_cut_scale))  # a task's curriculum, by environment step
     step_acc += 1.0 / args.utd
     n = int(step_acc)
     step_acc -= n
