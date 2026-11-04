@@ -23,6 +23,10 @@ parser.add_argument("out")
 parser.add_argument("--envs", type=int, default=256)
 parser.add_argument("--off_hold_cut", type=float, default=0.05, help="the final curriculum stage")
 parser.add_argument("--pass_frame", type=int, default=617, help="the right hand's bar 6 hold ends here")
+parser.add_argument("--start_offset", type=int, default=0, help="from_t0 starts this many frames into each clip")
+parser.add_argument("--no_stayed_cut", action="store_true", help="never cut on the stayed timers")
+parser.add_argument("--no_uniform", action="store_true", help="from each clip's start only")
+parser.add_argument("--record", default=None, help="npz: env 0's from-start trajectory per clip (root pose, joints)")
 args = parser.parse_args()
 os.environ["HBOLD_DATA"] = args.data
 
@@ -41,6 +45,8 @@ cfg = make_sim(DEV)
 cfg.physics = climb_physics(args.clip)
 kin, motion, mdp = climb_parts(args.clip, DEV)
 mdp.hold_cut = args.off_hold_cut
+if args.no_stayed_cut:
+    task.STAY_TOLERANCE = float("inf")  # ClimbMDP.terminate reads it at call time
 ck = torch.load(args.checkpoint, map_location=DEV, weights_only=False)
 K, hist = ck["args"]["goal_frames"], ck["args"]["hist"]
 pi = Policy(OBS_DIM, mdp.goal_dim(K), hist=hist).to(DEV)
@@ -50,8 +56,10 @@ N = args.envs
 env = ClimbSim(cfg, N, motion, mdp, clip_id=args.clip, eval_mode=True)
 pi.action_low, pi.action_high = env.action_bounds()
 @torch.no_grad()
-def run(frames: torch.Tensor) -> dict:
-    """Every env from its start frame until its first cut or its clip's end."""
+def run(frames: torch.Tensor, record: list | None = None) -> dict:
+    """Every env from its start frame until its first cut or its clip's end.
+    record: filled with the furthest-reaching env's (root position, root
+    quaternion, joint positions in model order, frame) per step."""
     end = motion.clip_end[motion.clip_id[frames]]
     first = motion.clip_start[motion.clip_id[frames]]
     env.reset(torch.arange(N, device=DEV), frames)
@@ -60,8 +68,13 @@ def run(frames: torch.Tensor) -> dict:
     obs = o.unsqueeze(1).repeat(1, hist, 1)
     alive = torch.ones(N, dtype=torch.bool, device=DEV)
     reached = frames.clone()
+    steps = []
     cause = torch.full((N,), -1, device=DEV)  # 0 torso, 1 off_hold, 2 stayed, 3 clip end
     while alive.any():
+        if record is not None:
+            d = env.robot.data
+            steps.append(((d.root_link_pos_w - env._origin(slice(None), env.f)).cpu(), d.root_link_quat_w.cpu(),
+                          d.joint_pos.cpu(), (env.f - first).cpu(), alive.cpu()))
         out = env.step(pi(obs, mdp.goal(env.f, K, env.state())))  # eval_mode: no auto-reset
         reached = torch.where(alive, env.f, reached)
         ended = alive & out["done"]
@@ -74,23 +87,42 @@ def run(frames: torch.Tensor) -> dict:
         o = mdp.add_noise(mdp.obs(env.state(), env.a_prev, env.xi, env.f))
         obs = torch.cat((obs[:, 1:], o.unsqueeze(1)), 1)
     gained = (reached - frames).float()
+    if record is not None:
+        k = int(gained.argmax())
+        record.extend((p[k].numpy(), q[k].numpy(), j[k].numpy(), int(f[k])) for p, q, j, f, a in steps if a[k])
     names = ["torso", "off_hold", "stayed", "clip_end"]
     return {
         "frames_gained_mean": float(gained.mean()), "frames_gained_median": float(gained.median()),
         "pass_frame_share": float((reached - first >= args.pass_frame).float().mean()),
         "complete_share": float((reached >= end).float().mean()),
+        "frames_gained_max": float(gained.max()),
         "cause": {n: int((cause == k).sum()) for k, n in enumerate(names)},
+        "reached_each": (reached - first).tolist(), "cause_each": [names[int(c)] for c in cause],
     }
 
 
-def clip_runs(c: int) -> dict:
-    """Clip c from its first frame, and from uniform frames inside it."""
+recorded = {}
+
+
+def clip_runs(c: int, name: str) -> dict:
+    """Clip c from its first frame (plus --start_offset), and from uniform frames inside it."""
     a, b = int(motion.clip_start[c]), int(motion.clip_end[c])
-    return {"from_t0": run(torch.full((N,), a, dtype=torch.long, device=DEV)),
-            "from_uniform": run(torch.randint(a, b - 1, (N,), device=DEV))}
+    rec = [] if args.record else None
+    out = {"from_t0": run(torch.full((N,), a + args.start_offset, dtype=torch.long, device=DEV), rec)}
+    if rec:
+        recorded[name] = rec
+    if not args.no_uniform:
+        out["from_uniform"] = run(torch.randint(a, b - 1, (N,), device=DEV))
+    return out
 
 
-per_clip = {name: clip_runs(c) for c, name in enumerate(args.clip.split(","))}
+per_clip = {name: clip_runs(c, name) for c, name in enumerate(args.clip.split(","))}
+if args.record:
+    import numpy as np
+
+    np.savez(args.record, **{f"{k}_{field}": np.stack([r[i] for r in v]) for k, v in recorded.items()
+                             for i, field in enumerate(("root_p", "root_quat", "q", "frame"))},
+             joint_names=np.array(env.robot.joint_names))
 res = {"checkpoint": args.checkpoint, "off_hold_cut": args.off_hold_cut, "envs": N,
        **next(iter(per_clip.values())), "clips": per_clip}
 print(json.dumps(res, indent=1))
