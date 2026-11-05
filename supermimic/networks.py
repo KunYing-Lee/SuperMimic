@@ -62,8 +62,8 @@ class WorldModel(nn.Module):
     """Deterministic dynamics s_{t+1} = f(s_t, a_t, xi) predicting frame-local state increments."""
 
     def __init__(self, hidden=(2048, 2048, 2048), goal_dim: int = 730, extra_dim: int = 0, contact_dim: int = 0):
-        """``extra_dim``: task inputs beyond the invariant state (a climb's route as seen
-        from the robot). ``contact_dim``: contact labels predicted from the same trunk,
+        """``extra_dim``: task inputs beyond the invariant state (e.g. scene geometry
+        relative to the robot). ``contact_dim``: contact labels predicted from the same trunk,
         an auxiliary target that makes the model represent which contacts hold."""
         super().__init__()
         self.in_dim = INV_DIM + NUM_J + XI_DIM + extra_dim

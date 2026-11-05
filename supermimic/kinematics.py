@@ -19,7 +19,7 @@ class G1Kinematics:
     def __init__(self, device: str, tracked: list[str] = TRACKED_BODIES, model: mujoco.MjModel | None = None,
                  sites: tuple[str, ...] = ()):
         """FK of ``model`` (the G1 MJCF by default). ``sites``: fixed frames on moving
-        bodies whose world poses ``site_poses`` returns, e.g. a climbing hook's seat."""
+        bodies whose world poses ``site_poses`` returns, e.g. a tool attachment."""
         m = model if model is not None else mujoco.MjModel.from_xml_path(MJCF_PATH)
         self.device = device
         jname_to_idx = {n: i for i, n in enumerate(G1_JOINT_NAMES)}

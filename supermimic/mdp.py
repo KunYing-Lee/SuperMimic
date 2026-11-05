@@ -77,12 +77,12 @@ INV_DIM = 1 + 3 + 3 + 3 + 29 + 29
 
 
 class MDP:
-    """Flat-ground motion tracking. A task variant (supermimic.climb) overrides the
+    """Flat-ground motion tracking. Task variants override the
     hooks below; their defaults are this task's own behaviour."""
 
     analytic_termination = False  # False: imagination uses the learned termination head
-    aux_dim = 0  # per-env task state carried through steps and replay (e.g. hold timers)
-    wm_extra_dim = 0  # world-model inputs beyond the invariant state (e.g. route geometry)
+    aux_dim = 0  # per-env task state carried through steps and replay (e.g. timers)
+    wm_extra_dim = 0  # world-model inputs beyond the invariant state (e.g. scene geometry)
     contact_dim = 0  # per-step contact labels the world model also predicts
     max_step_reward = MAX_STEP_REWARD
     critic_extra = 29 + 14 * 3 + 3 + 6 + XI_DIM
@@ -115,6 +115,10 @@ class MDP:
     def terminate(self, S, f, aux, F=()):
         """(next task state, termination) after a step to S at reference frame f."""
         return aux, self.termination(S, f)
+
+    def imagine_termination(self, S, f, aux, F=()):
+        """Termination in imagination; tasks may supply their own derivatives."""
+        return self.terminate(S, f, aux, F=F)
 
     # ---------------- observation ----------------
     def obs(self, S, a_prev, xi, f) -> torch.Tensor:

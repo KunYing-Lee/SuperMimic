@@ -23,8 +23,8 @@ FIELDS = {
 
 class ReplayBuffer:
     def __init__(self, T: int, N: int, device: str, storage_device: str | None = None, extra: dict | None = None):
-        """``extra``: a task's further fields, name -> (shape, dtype), e.g. a climb's
-        hold timers (``aux``, given to imagined starts) and contact labels (``contact``,
+        """``extra``: a task's further fields, name -> (shape, dtype), e.g. task
+        timers (``aux``, given to imagined starts) and contact labels (``contact``,
         world-model targets)."""
         if T < 1 or N < 1:
             raise ValueError("Replay dimensions must be positive")

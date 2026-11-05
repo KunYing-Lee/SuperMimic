@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
-import ast
 import copy
-from pathlib import Path
 import unittest
+from functools import partial
 
 import torch
 from torch.utils.checkpoint import checkpoint
 
 from supermimic.buffer import FIELDS, ReplayBuffer
-from supermimic.mdp import INV_DIM, MDP, OBS_DIM, invariant_features, normalize_xi
 from supermimic.kinematics import G1Kinematics
+from supermimic.mdp import INV_DIM, MDP, OBS_DIM, invariant_features, normalize_xi
 from supermimic.motion import MotionLib
-from supermimic.robot import default_joint_pos_list
 from supermimic.networks import WorldModel
-from supermimic.rotations import axis_angle_to_mat, matmul3, matvec3, rot_angle_sq, so3_exp, yaw_mat
+from supermimic.robot import default_joint_pos_list
+from supermimic.rotations import (
+    axis_angle_to_mat,
+    matmul3,
+    matvec3,
+    rot_angle_sq,
+    so3_exp,
+    yaw_mat,
+)
+from supermimic.train import _imag_step
 
 
 def state(batch=3):
@@ -135,7 +142,8 @@ class RotationAndGoalTests(unittest.TestCase):
 
     def test_world_model_body_frame_represents_motion_at_vertical_pelvis(self):
         vertical = torch.tensor([[0., 0., 1.], [0., 1., 0.], [-1., 0., 0.]])
-        s = list(state(1)); s[1] = vertical.unsqueeze(0)
+        s = list(state(1))
+        s[1] = vertical.unsqueeze(0)
         next_state = list(s)
         next_state[0] = torch.tensor([[0.3, -0.2, 0.1]])
         next_state[2] = torch.tensor([[0.6, 0.4, -0.1]])
@@ -170,7 +178,8 @@ class RotationAndGoalTests(unittest.TestCase):
         m.root_v = torch.tensor([[1., 2., 0.]]).repeat(4, 1)
         m.root_w = torch.tensor([[0., 0., 0.1]]).repeat(4, 1)
         m.q, m.qd = torch.zeros(4, 29), torch.zeros(4, 29)
-        s = list(state(1)); s[0] = torch.tensor([[0.01, 0.03, 0.95]])
+        s = list(state(1))
+        s[0] = torch.tensor([[0.01, 0.03, 0.95]])
         f = torch.tensor([0])
         goal = m.goal(f, 2, s)
         yaw = axis_angle_to_mat(torch.tensor([0., 0., 1.]), torch.tensor(0.7))
@@ -180,13 +189,17 @@ class RotationAndGoalTests(unittest.TestCase):
         m2.root_R = yaw @ m.root_R
         m2.root_v = (yaw @ m.root_v.unsqueeze(-1)).squeeze(-1)
         m2.root_w = (yaw @ m.root_w.unsqueeze(-1)).squeeze(-1)
-        s2 = list(s); s2[0] = (yaw @ s[0].unsqueeze(-1)).squeeze(-1) + translated; s2[1] = yaw @ s[1]
+        s2 = list(s)
+        s2[0] = (yaw @ s[0].unsqueeze(-1)).squeeze(-1) + translated
+        s2[1] = yaw @ s[1]
         torch.testing.assert_close(m2.goal(f, 2, s2), goal, rtol=1e-5, atol=1e-6)
-        s3 = list(s); s3[1] = yaw @ s[1]
+        s3 = list(s)
+        s3[1] = yaw @ s[1]
         self.assertFalse(torch.allclose(m.goal(f, 2, s3), goal))
         self.assertEqual(OBS_DIM, 93)
         vertical = torch.tensor([[[0., 0., 1.], [0., 1., 0.], [-1., 0., 0.]]], requires_grad=True)
-        s4 = list(s); s4[1] = vertical
+        s4 = list(s)
+        s4[1] = vertical
         vertical_goal = m.goal(f, 2, s4)
         self.assertTrue(torch.isfinite(vertical_goal).all())
         (vertical_goal * torch.arange(vertical_goal.numel())).sum().backward()
@@ -195,12 +208,6 @@ class RotationAndGoalTests(unittest.TestCase):
 
 class RecomputeTests(unittest.TestCase):
     def test_actual_imagination_step_preserves_gradients_with_frozen_world_model(self):
-        # Load the actual function without running train.py's CUDA startup.
-        # The fixture uses the same MDP/FK/goal implementations as the trainer.
-        source_path = Path(__file__).parents[1] / 'supermimic' / 'train.py'
-        tree = ast.parse(source_path.read_text())
-        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_imag_step')
-        module = ast.Module(body=[function], type_ignores=[])
         kin = G1Kinematics('cpu')
         motion = object.__new__(MotionLib)
         frames, batch, K, history = 8, 2, 2, 3
@@ -233,16 +240,15 @@ class RecomputeTests(unittest.TestCase):
         pi2 = copy.deepcopy(pi)
         wm_before = {key: value.clone() for key, value in wm.state_dict().items()}
         initial = motion.ref_state(torch.zeros(batch, dtype=torch.long))
-        xi = torch.zeros(batch, 33); xi[:, 0] = .75
+        xi = torch.zeros(batch, 33)
+        xi[:, 0] = .75
         xi_n = normalize_xi(xi)
         actions = torch.zeros(batch, 29)
         f0 = torch.zeros(batch, dtype=torch.long)
         observations = mdp.obs(initial, actions, xi, f0).unsqueeze(1).repeat(1, history, 1)
 
         def rollout(policy, recompute):
-            namespace = {'pi': policy, 'wm': wm, 'motion': motion, 'mdp': mdp, 'K': K, 'torch': torch}
-            exec(compile(module, str(source_path), 'exec'), namespace)
-            actual_step = namespace['_imag_step']
+            actual_step = partial(_imag_step, pi=policy, wm=wm, mdp=mdp, K=K)
             current, previous, hist, frame, aux = initial, actions, observations, f0, torch.zeros(batch, 0)
             goal = motion.goal(frame, K, current)
             survival = torch.ones(batch)
