@@ -45,6 +45,16 @@ MUJOCO_GL=egl uv run python tools/render.py logs/lafan1_mjlab/traj.npz \
 
 [Implementation details](docs/paper_alignment.md) · [Evaluation guide](docs/evaluation_comparison.md) · [Runtime benchmarks](docs/mars5090_runtime.md)
 
+## External tasks
+
+Training takes a task, `supermimic.task.Task`; LAFAN1 (`LafanTask`) is the default. A task
+adds its flags and defaults (`add_arguments`), builds its MDP and physics (`setup`) and its
+simulator (`make_env`), draws imagined starts from replay (`sample_starts`), and declares
+the files a strict resume checks (`sources`, `assets`) and the flags `--fine_tune` may
+change. Its MDP may override `schedule(env_steps)` and `imagine_termination`. A launcher
+outside this repository, pinned to a commit of it, runs `supermimic.train.main(task=MyTask())`;
+the climbing task is `humanoid_boldering`'s `hbold.supermimic`.
+
 ## License
 
 [MIT](LICENSE). Original implementation © 2026 ETH Zurich, Chong Zhang. LAFAN1: CC BY-NC-ND 4.0; Unitree robot assets: BSD-3-Clause. Third-party assets retain their respective licenses.

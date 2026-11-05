@@ -5,14 +5,13 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
-from pathlib import Path
 import platform
 import random
 import subprocess
+from pathlib import Path
 
 import numpy as np
 import torch
-
 
 SCHEMA_VERSION = 2
 
@@ -25,19 +24,23 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def manifest(repo: str, args, motion, robot_path: str) -> dict:
+def manifest(repo: str, args, motion, robot_path: str | Path, task_sources=(), task_assets=()) -> dict:
+    """Hash core code, motion/robot assets, and the task's declared files."""
     root = Path(repo)
-    source = {str(p.relative_to(root)): sha256(p) for p in sorted((root / "supermimic").glob("*.py"))}
+    source = {str(p.relative_to(root)): sha256(p) for p in sorted((root / "supermimic").rglob("*.py"))}
+    source.update({str(Path(p).resolve()): sha256(Path(p)) for p in task_sources})
     robot_assets = [p for p in Path(robot_path).parent.rglob("*") if p.is_file() and p.suffix.lower() in {".xml", ".urdf", ".stl", ".obj", ".png", ".jpg"}]
-    assets = {str(Path(p).resolve()): sha256(Path(p)) for p in [*motion.files, *getattr(motion, "metadata_files", []), *robot_assets]}
+    assets = {str(Path(p).resolve()): sha256(Path(p)) for p in [*motion.files, *getattr(motion, "metadata_files", []), *robot_assets, *task_assets]}
     versions = {}
     for package in ("torch", "mjlab", "mujoco", "mujoco-warp", "warp-lang", "numpy"):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
             versions[package] = None
-    git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
-    git_dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True).strip())
+    git_commit, git_dirty = None, None
+    if (root / ".git").exists():
+        git_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+        git_dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True).strip())
     return {
         "schema_version": SCHEMA_VERSION,
         "repository_root": str(root.resolve()),
@@ -65,28 +68,36 @@ def manifest(repo: str, args, motion, robot_path: str) -> dict:
     }
 
 
-def validate_resume(checkpoint: dict, current: dict):
+def validate_resume(checkpoint: dict, current: dict, allow_args=(), allow_source: bool = False):
+    """A resume continues the saved run: the same code, packages, assets and
+    training configuration. A deliberate fine-tune may allow other code
+    (allow_source) and the arguments in allow_args to differ."""
     if checkpoint.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("This checkpoint lacks complete restart state; use a schema-v2 full last.pt checkpoint")
     previous = checkpoint["manifest"]
-    for field in ("source_sha256", "packages", "cuda"):
+    for field in ("packages", "cuda") if allow_source else ("source_sha256", "packages", "cuda"):
         if previous[field] != current[field]:
             raise ValueError(f"Resume {field} differs from the saved run")
     # Paths may move together with a repository; preserve file identities and hashes.
     def asset_id(path, record):
         p = Path(path)
         repo = Path(record["repository_root"])
-        motion_dir = Path(record["args"]["motion_dir"]).resolve()
-        if p.is_relative_to(motion_dir):
-            return "motion/" + str(p.relative_to(motion_dir))
+        if record["args"].get("motion_dir") is not None:
+            motion_dir = Path(record["args"]["motion_dir"]).resolve()
+            if p.is_relative_to(motion_dir):
+                return "motion/" + str(p.relative_to(motion_dir))
         if p.is_relative_to(repo):
             return str(p.relative_to(repo))
         return str(p)
     old_assets = sorted((asset_id(p, previous), digest) for p, digest in previous["asset_sha256"].items())
     new_assets = sorted((asset_id(p, current), digest) for p, digest in current["asset_sha256"].items())
+    if allow_source:  # external code may sit elsewhere: compare asset contents alone
+        old_assets, new_assets = sorted(d for _, d in old_assets), sorted(d for _, d in new_assets)
     if old_assets != new_assets:
-        raise ValueError("Resume motion/robot asset hashes differ from the saved run")
-    operational = {"resume", "log_dir", "motion_dir", "iterations", "ckpt_every", "log_every"}
+        raise ValueError("Resume motion/robot/task asset hashes differ from the saved run")
+    # arguments that change neither the run's data nor its gradients (activation checkpointing recomputes exactly)
+    operational = {"resume", "log_dir", "motion_dir", "iterations", "ckpt_every", "log_every", "fine_tune",
+                   "activation_checkpoint", *allow_args}
     old_args = {k: v for k, v in previous["args"].items() if k not in operational}
     new_args = {k: v for k, v in current["args"].items() if k not in operational}
     if old_args != new_args:

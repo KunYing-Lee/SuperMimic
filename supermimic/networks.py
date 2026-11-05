@@ -61,10 +61,14 @@ def run_mlp(net: nn.Module, x: torch.Tensor) -> torch.Tensor:
 class WorldModel(nn.Module):
     """Deterministic dynamics s_{t+1} = f(s_t, a_t, xi) predicting frame-local state increments."""
 
-    def __init__(self, hidden=(2048, 2048, 2048), goal_dim: int = 730):
+    def __init__(self, hidden=(2048, 2048, 2048), goal_dim: int = 730, extra_dim: int = 0, contact_dim: int = 0):
+        """``extra_dim``: task inputs beyond the invariant state (e.g. scene geometry
+        relative to the robot). ``contact_dim``: contact labels predicted from the same trunk,
+        an auxiliary target that makes the model represent which contacts hold."""
         super().__init__()
-        self.in_dim = INV_DIM + NUM_J + XI_DIM
-        self.net = mlp(self.in_dim, list(hidden), WM_OUT, act=nn.SiLU, layer_norm=True)
+        self.in_dim = INV_DIM + NUM_J + XI_DIM + extra_dim
+        self.contact_dim = contact_dim
+        self.net = mlp(self.in_dim, list(hidden), WM_OUT + contact_dim, act=nn.SiLU, layer_norm=True)
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
         self.in_norm = RunningNorm(self.in_dim)
@@ -80,8 +84,9 @@ class WorldModel(nn.Module):
     def termination_probability(self, errors: torch.Tensor) -> torch.Tensor:
         return torch.sigmoid(self.termination_logits(errors))
 
-    def inputs(self, S, a, xi_n):
-        return torch.cat((invariant_features(S), a, xi_n), -1)
+    def inputs(self, S, a, xi_n, extra=None):
+        parts = (invariant_features(S), a, xi_n) if extra is None else (invariant_features(S), a, xi_n, extra)
+        return torch.cat(parts, -1)
 
     @staticmethod
     def targets(S, S1):
@@ -103,16 +108,21 @@ class WorldModel(nn.Module):
             -1,
         )
 
-    def step(self, S, a, xi_n):
+    def step(self, S, a, xi_n, extra=None):
+        return self.predict(S, a, xi_n, extra)[0]
+
+    def predict(self, S, a, xi_n, extra=None):
+        """(next state, contact logits)."""
         p, R, v, w, q, qd = S
-        y = run_mlp(self.net, self.in_norm(self.inputs(S, a, xi_n)))
+        y = run_mlp(self.net, self.in_norm(self.inputs(S, a, xi_n, extra)))
+        y, contact = y[..., :WM_OUT], y[..., WM_OUT:]
         d = y * self.out_norm.std() + self.out_norm.mean
         dp, dth, dv, dw, dq, dqd = d.split((3, 3, 3, 3, NUM_J, NUM_J), -1)
         p1 = p + matvec3(R, dp)
         R1 = matmul3(R, so3_exp(dth))
         v1 = v + matvec3(R, dv)
         w1 = w + matvec3(R, dw)
-        return (p1, R1, v1, w1, q + dq, qd + dqd)
+        return (p1, R1, v1, w1, q + dq, qd + dqd), contact
 
     @staticmethod
     def state_error(S_hat, S):
@@ -148,12 +158,20 @@ class Policy(nn.Module):
             self.dec[-1].bias.zero_()
         self.obs_norm = RunningNorm(obs_dim)
         self.goal_norm = RunningNorm(goal_dim)
+        # The PD-target domain the motors can act on (TrackingSim.action_bounds); the
+        # projection is exactly the identity inside it. Unbounded unless a task sets it;
+        # set at construction, never from a checkpoint.
+        self.register_buffer("action_low", torch.full((NUM_J,), -torch.inf), persistent=False)
+        self.register_buffer("action_high", torch.full((NUM_J,), torch.inf), persistent=False)
+
+    def project(self, a: torch.Tensor) -> torch.Tensor:
+        return torch.clamp(a, min=self.action_low, max=self.action_high)
 
     def forward(self, obs_hist: torch.Tensor, goal: torch.Tensor) -> torch.Tensor:
         """obs_hist: (B, hist, obs_dim) noisy observations, newest last."""
         z = torch.tanh(run_mlp(self.enc, self.goal_norm(goal)))
         o = self.obs_norm(obs_hist).flatten(-2)
-        return run_mlp(self.dec, torch.cat((z, o), -1))
+        return self.project(run_mlp(self.dec, torch.cat((z, o), -1)))
 
 
 class Critic(nn.Module):
