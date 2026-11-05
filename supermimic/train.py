@@ -84,6 +84,11 @@ parser.add_argument("--hold_cut_scale", type=float, default=1.0,
 parser.add_argument("--climb_preset", default=None, choices=sorted(CLIMB_PRESETS),
                     help="climb: a named set of the flags above (explicit flags still win); v2 also needs hbold's "
                          "bar-based stayed cut (task.STAY_ON_BAR)")
+parser.add_argument("--init_from", default=None,
+                    help="start from a small checkpoint (ckpt_*.pt: policy and world model only) at its iteration and "
+                         "environment step; the critic, optimizers and replay start fresh")
+parser.add_argument("--pi_freeze_iters", type=int, default=0,
+                    help="with --init_from: iterations the policy is held (zero LR) while the fresh critic warms up")
 parser.add_argument("--fine_tune", action="store_true",
                     help="with --resume: allow other code, the soft-cut and start-share flags (and flags the saved run predates, "
                          "at their defaults); the run continues from the checkpoint's full state")
@@ -194,6 +199,14 @@ if args.resume:
     step_acc = resume_ck["step_acc"]
     if args.iterations <= start_it:
         raise ValueError("--iterations must exceed the saved iteration")
+elif args.init_from:
+    init_ck = torch.load(args.init_from, map_location="cpu", weights_only=False)
+    wm.load_state_dict(init_ck["wm"])
+    pi.load_state_dict(init_ck["pi"])
+    start_it, wall_offset, sim_steps = init_ck["iteration"], init_ck["wall_time"], init_ck["sim_steps"]
+    if args.iterations <= start_it:
+        raise ValueError("--iterations must exceed the checkpoint's iteration")
+    del init_ck
 
 
 write_json(os.path.join(args.log_dir, "args.json"), vars(args))
@@ -457,6 +470,9 @@ for it in range(start_it, args.iterations):
     for o in (opt_wm, opt_pi, opt_v):
         for gparam in o.param_groups:
             gparam["lr"] = lr
+    if args.init_from and it < start_it + args.pi_freeze_iters:
+        for gparam in opt_pi.param_groups:
+            gparam["lr"] = 0.0  # the critic, fresh, learns the held policy's values first
     mdp.schedule(int(sim_steps // args.num_envs / args.hold_cut_scale))  # a task's curriculum, by environment step
     step_acc += 1.0 / args.utd
     n = int(step_acc)
