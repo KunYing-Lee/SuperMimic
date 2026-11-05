@@ -5,8 +5,9 @@ description = "Generic G1 world-model training on native mjlab"
 requires-python = ">=3.11,<3.14"
 license = "MIT"
 dependencies = [
-  "mjlab==1.6.0", "torch==2.11.0", "mujoco==3.11.0",
-  "mujoco-warp==3.11.0", "warp-lang==1.14.0",
+  # ranges, as a library; uv.lock pins this repository's own runs
+  "mjlab==1.6.0", "torch>=2.11", "mujoco>=3.11,<3.12",
+  "mujoco-warp>=3.11,<3.12", "warp-lang>=1.14",
   "huggingface-hub>=1.0,<2", "numpy>=2,<3", "matplotlib>=3.10,<4", "pillow>=11,<13",
 ]
 

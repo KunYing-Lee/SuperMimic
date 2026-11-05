@@ -82,6 +82,10 @@ def make_parser(task: Task) -> argparse.ArgumentParser:
     return parser
 
 
+def _mean(x) -> float:
+    return float(sum(float(v) for v in x) / max(len(x), 1))
+
+
 def _imag_step(S, o_hist, a_prev, f, xi, xi_n, g, aux, F, *, pi, wm, mdp, K):
     """F: the task's shared features of S (MDP.features), carried so each imagined
     state's are computed once."""
@@ -429,14 +433,12 @@ def main(argv=None, *, task: Task | None = None):
                     print(f"[prof] collect {1e3*(tp1-tp0):.0f} ms ({n} steps) | wm {1e3*(tp2-tp1):.0f} ms | policy+critic {1e3*(tp3-tp2):.0f} ms", flush=True)
                 agg["pi"].append(pl), agg["v"].append(vl), agg["ir"].append(ir), agg["gn"].append(gn), agg["surv"].append(surv)
             if (it + 1) % args.log_every == 0:
-                def mean(x):
-                    return float(sum(float(v) for v in x) / max(len(x), 1))
                 ips = args.log_every / (time.time() - t_log)
                 t_log = time.time()
                 wall_h = (time.time() - t_start) / 3600
                 term_frac = float(sum(float(v) for v in stats["term"]) / max(sum(float(v) for v in stats["done"]), 1))
-                row = [it + 1, wall_h, sim_steps, mean(agg["wm"]), mean(agg["wm8"]), mean(agg["pi"]), mean(agg["v"]), mean(agg["ir"]),
-                       mean(agg["gn"]), mean(agg["surv"]), mean(stats["r"]), mean(stats["ep_len"]), mean(stats["ep_ret"]), term_frac, ips, lr, mean(agg["term_bce"]), torch.cuda.max_memory_allocated(dev) / 2**30]  # fmt: skip
+                row = [it + 1, wall_h, sim_steps, _mean(agg["wm"]), _mean(agg["wm8"]), _mean(agg["pi"]), _mean(agg["v"]), _mean(agg["ir"]),
+                       _mean(agg["gn"]), _mean(agg["surv"]), _mean(stats["r"]), _mean(stats["ep_len"]), _mean(stats["ep_ret"]), term_frac, ips, lr, _mean(agg["term_bce"]), torch.cuda.max_memory_allocated(dev) / 2**30]  # fmt: skip
                 log_f.write(",".join(f"{x:.6g}" if isinstance(x, float) else str(x) for x in row) + "\n")
                 log_f.flush()
                 print(f"it {it + 1} | {wall_h:.3f} h | wm {row[3]:.4f} e8 {row[4]:.4f} | pi {row[5]:.3f} v {row[6]:.4f} imag_r {row[7]:.3f} surv {row[9]:.3f} "

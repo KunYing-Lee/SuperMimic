@@ -2457,14 +2457,14 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.0,<2" },
     { name = "matplotlib", specifier = ">=3.10,<4" },
     { name = "mjlab", specifier = "==1.6.0" },
-    { name = "mujoco", specifier = "==3.11.0" },
-    { name = "mujoco-warp", specifier = "==3.11.0" },
+    { name = "mujoco", specifier = ">=3.11,<3.12" },
+    { name = "mujoco-warp", specifier = ">=3.11,<3.12" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "pillow", specifier = ">=11,<13" },
-    { name = "torch", marker = "sys_platform != 'linux'", specifier = "==2.11.0" },
-    { name = "torch", marker = "sys_platform == 'linux'", specifier = "==2.11.0", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "warp-lang", marker = "sys_platform != 'linux'", specifier = "==1.14.0" },
-    { name = "warp-lang", marker = "sys_platform == 'linux'", specifier = "==1.14.0", index = "https://pypi.nvidia.com/" },
+    { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.11" },
+    { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.11", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "warp-lang", marker = "sys_platform != 'linux'", specifier = ">=1.14" },
+    { name = "warp-lang", marker = "sys_platform == 'linux'", specifier = ">=1.14", index = "https://pypi.nvidia.com/" },
 ]
 
 [package.metadata.requires-dev]
