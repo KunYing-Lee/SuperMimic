@@ -48,17 +48,18 @@ def soft_timed_out(timer_s, tolerance: float, dt: float, temp_s: float):
     return 1 - (1 - torch.sigmoid((timer_s - tolerance - dt / 2) / temp_s)).prod(-1)
 
 
-def soft_stayed(site, left, ref_site, bearing, near: float, gone: float, temp: float, bar_test: dict):
+def soft_stayed(site, left, ref_site, bearing, near: float, gone: float, temp: float, bars=None, route=None):
     """(N, 4) a smooth stand-in for stayed_step's stayed test: a sigmoid of
-    (near - the limb's distance from the hold it left) / temp, where the
+    (near - the hand's distance from the bar it left) / temp, where the
     reference has gone and does not bear (those are the reference's, not the
-    policy's). bar_test: stayed_step's bars, route and on_bar, if any."""
+    policy's). As stayed_step: hands only (feet 0), measured to the whole bar
+    with `bars` (and each state's `route`), else to the point left."""
     dist = (site - left).square().sum(-1).sqrt()
-    if bar_test:
-        on_bar = torch.tensor(bar_test["on_bar"], device=site.device)
-        dist = torch.where(on_bar, geometry.to_bar_of(site, left, bar_test["bars"], bar_test["route"]), dist)
+    if bars is not None:
+        dist = torch.cat((geometry.to_bar_of(site, left, bars, route)[..., :2], dist[..., 2:]), -1)
     ref_gone = (ref_site - left).square().sum(-1).sqrt() > gone
-    return torch.sigmoid((near - dist) / temp) * (ref_gone & ~bearing)
+    hands = torch.tensor([True, True, False, False], device=site.device)
+    return torch.sigmoid((near - dist) / temp) * (ref_gone & ~bearing & hands)
 
 
 def straight_through(hard, soft):
@@ -142,11 +143,10 @@ class ClimbMDP(MDP):
         bearing = m.bearing[f]
         off = limbs.off_hold_step(aux[:, :4], far, turn, bearing, self.hold_cut, task.FOOT_SCALE,
                                   task.FREE_CUT, task.TURN_CUT, CONTROL_DT)
-        # the hands' stayed test against the whole bar they left, where hbold has it
-        bar_test = {"bars": self.bars, "route": m.clip_id[f], "on_bar": task.STAY_ON_BAR} \
-            if hasattr(task, "STAY_ON_BAR") else {}
+        # the hands' stayed test against the whole bar they left (hbold's limbs.stayed_step; feet are never cut)
+        route = m.clip_id[f]
         on = limbs.stayed_step(aux[:, 4:], sites, m.left_pos[f], m.hold_pos[f], bearing, task.STAY_NEAR,
-                               task.STAY_GONE, CONTROL_DT, **bar_test)
+                               task.STAY_GONE, CONTROL_DT, bars=self.bars, route=route)
         low = tracking.anchor_z_off(bp[:, ANCHOR], m.body_p[f][:, ANCHOR], task.ANCHOR_Z_CUT)
         timed_off = limbs.timed_out(off, task.HOLD_TOLERANCE)
         rest = low | limbs.timed_out(on, task.STAY_TOLERANCE)
@@ -159,7 +159,7 @@ class ClimbMDP(MDP):
         if not stay_too:
             return torch.cat((off, on), -1), 1 - (1 - rest.float()) * (1 - timed_off)
         is_on = straight_through((on > 0).float(), soft_stayed(sites, m.left_pos[f], m.hold_pos[f], bearing,
-                                                               task.STAY_NEAR, task.STAY_GONE, temp, bar_test))
+                                                               task.STAY_NEAR, task.STAY_GONE, temp, self.bars, route))
         on = (aux[:, 4:] + CONTROL_DT) * is_on  # stayed_step's timers, differentiable
         timed_on = straight_through(limbs.timed_out(on, task.STAY_TOLERANCE).float(),
                                     soft_timed_out(on, task.STAY_TOLERANCE, CONTROL_DT, temp_s))

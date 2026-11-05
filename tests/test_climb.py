@@ -170,11 +170,11 @@ class ClimbTests(unittest.TestCase):
         site[1, :, 0] = 0.03
         bearing = torch.tensor([[False] * 4, [False, True, False, True]])
         hard = limbs.stayed_step(torch.zeros(2, 4), site, left, ref, bearing, task.STAY_NEAR, task.STAY_GONE, 0.02) > 0
-        errs = [float((soft_stayed(site, left, ref, bearing, task.STAY_NEAR, task.STAY_GONE, t, {}) - hard.float())
+        errs = [float((soft_stayed(site, left, ref, bearing, task.STAY_NEAR, task.STAY_GONE, t) - hard.float())
                       .abs().max()) for t in (1e-2, 1e-3, 1e-5)]
         self.assertTrue(errs[0] > errs[1] > errs[2] and errs[2] < 1e-6)
         site.requires_grad_(True)
-        soft_stayed(site, left, ref, bearing, task.STAY_NEAR, task.STAY_GONE, 0.01, {}).sum().backward()
+        soft_stayed(site, left, ref, bearing, task.STAY_NEAR, task.STAY_GONE, 0.01).sum().backward()
         self.assertLess(float(site.grad[0, 0, 0]), 0)  # further from the old hold: less stayed
         self.assertEqual(float(site.grad[1, 1].abs().sum()), 0.0)  # a bearing limb has no stayed test
 
@@ -183,33 +183,13 @@ class ClimbTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(low).all() and torch.isfinite(high).all())
         self.assertTrue((low < 0).all() and (high > 0).all())
 
-    def test_failure_rate_starts_follow_where_episodes_fail(self):
-        from supermimic.climb.sim import ClimbSim
-
-        env = object.__new__(ClimbSim)
-        env.motion, env.device, env.start_sampler, env.clip_start_share = self.motion, "cpu", "failure_rate", 0.0
-        nb = self.motion.num_bins
-        env.bin_visit = torch.ones(nb)
-        env.bin_fail = torch.zeros(nb)
-        env.bin_fail[1] = 1.0
-        from supermimic.climb.sim import FAIL_KERNEL, FAIL_LAMBDA
-
-        k = torch.tensor([FAIL_LAMBDA**i for i in range(FAIL_KERNEL)])
-        env.fail_kernel = k / k.sum()
-        frames, bins = env.sample_frames(4000)
-        share = torch.bincount(bins, minlength=nb).float() / 4000
-        self.assertGreater(float(share[1]), float(share[0]))  # the failing bin draws more than a flat share
-        self.assertTrue(bool((frames <= self.motion.clip_end[0] - 1).all()))
-
     def test_a_share_of_starts_is_at_the_clip_start(self):
-        from supermimic.climb.sim import ClimbSim
-
-        env = object.__new__(ClimbSim)
-        env.motion, env.device, env.start_sampler, env.clip_start_share = self.motion, "cpu", "failure_rate", 0.3
-        nb = self.motion.num_bins
-        env.bin_visit, env.bin_fail = torch.ones(nb), torch.zeros(nb)
-        env.fail_kernel = torch.ones(1)
-        frames, bins = env.sample_frames(4000)
+        env, kept = self.env, self.env.clip_start_share
+        env.clip_start_share = 0.3
+        try:
+            frames, bins = env.sample_frames(4000)
+        finally:
+            env.clip_start_share = kept
         share = float((frames == 0).float().mean())
         self.assertGreater(share, 0.25)
         self.assertLess(share, 0.36)

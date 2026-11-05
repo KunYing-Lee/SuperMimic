@@ -22,7 +22,6 @@ from hbold.asset_zoo.routes import kilter
 from hbold.data import LIMBS, route_path
 from hbold.tasks.goal.goal_env_cfg import contact_sensors
 from hbold.tasks.goal.mdp.commands import FOOT_N, HOOK_N
-from hbold.tasks.motion_tracking.mdp.commands import start_weights
 from hbold.tasks.motion_tracking.config.g1.env_cfgs import unitree_g1_motion_tracking_env_cfg
 from mjlab.entity import EntityCfg
 from mjlab.managers.event_manager import RecomputeLevel
@@ -37,10 +36,6 @@ PRESS_N = (HOOK_N, HOOK_N, FOOT_N, FOOT_N)  # N a hook, a foot, must press on th
 JOINT_OFFSET = 0.01  # rad, the encoder offsets' randomized half-range (TrackingSim._randomize_context)
 CONTACT_MAXMATCH = 128
 ROUTE_TILE = 10.0  # m between routes along y: far past a board's width and a robot's reach
-FAIL_ALPHA, FAIL_LAMBDA, FAIL_KERNEL, FAIL_UNIFORM = 0.001, 0.8, 3, 0.5
-"""hbold's PPO start sampling (mjlab's adaptive sampler with hbold's start_weights):
-the per-step decay of the failure and visit averages, the kernel spreading a
-bin's failures over the bins before it, and the flat share of starts."""  # route sensors' contact matches per world; the hooks' convex parts make many
 
 
 def climb_physics(clip_id: str) -> SimulationCfg:
@@ -86,37 +81,24 @@ def pd_action_bounds(m, default_q: torch.Tensor, alpha: torch.Tensor) -> tuple[t
 
 
 class ClimbSim(TrackingSim):
-    _EPISODE_FIELDS = (*TrackingSim._EPISODE_FIELDS, "bin_fail", "bin_visit")
-    _OPTIONAL_EPISODE_FIELDS = ("bin_fail", "bin_visit")  # the failure-rate starts': older runs have none
-
-    def __init__(self, sim_cfg, num_envs: int, motion, mdp, clip_id: str, start_sampler: str = "return",
-                 clip_start_share: float = 0.0, **kwargs):
-        """start_sampler: "return", SuperMimic's (bins where returns are low), or
-        "failure_rate", hbold's PPO task's (bins where episodes fail most often
-        for the steps spent there). clip_start_share: the share of sampled
-        starts put instead at a clip's first frame (a clip drawn uniformly), as
-        the climb is evaluated."""
-        if start_sampler not in ("return", "failure_rate"):
-            raise ValueError(f"unknown start sampler {start_sampler!r}")
+    def __init__(self, sim_cfg, num_envs: int, motion, mdp, clip_id: str, clip_start_share: float = 0.0, **kwargs):
+        """clip_start_share: the share of sampled starts put instead at a
+        clip's first frame (a clip drawn uniformly), as the climb is evaluated;
+        the rest are SuperMimic's return-based starts (bins where returns are low)."""
         if not 0.0 <= clip_start_share <= 1.0:
             raise ValueError("clip_start_share is a share")
-        self.clip_id, self.start_sampler, self.clip_start_share = clip_id, start_sampler, clip_start_share
+        self.clip_id, self.clip_start_share = clip_id, clip_start_share
         self.clips = clip_id.split(",")
         if len(self.clips) != len(motion.clip_len):
             raise ValueError(f"{len(self.clips)} routes for {len(motion.clip_len)} motion clips")
         self.route_origin = torch.zeros(len(self.clips), 3, device=sim_cfg.device)
         self.route_origin[:, 1] = ROUTE_TILE * torch.arange(len(self.clips), device=sim_cfg.device)
-        nb, dev = motion.num_bins, sim_cfg.device
-        self.bin_fail = torch.zeros(nb, device=dev)
-        self.bin_visit = torch.zeros(nb, device=dev)
-        kernel = torch.tensor([FAIL_LAMBDA**i for i in range(FAIL_KERNEL)], device=dev)
-        self.fail_kernel = kernel / kernel.sum()
         super().__init__(sim_cfg, num_envs, motion, mdp, **kwargs)
         self.route_sensors = [[self.scene[f"{limb}_{e}"] for e in self._routes()] for limb in LIMBS]
         self.press_n = torch.tensor(PRESS_N, device=self.device)
 
     def sample_frames(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
-        frames, bins = self._sample_frames(n)
+        frames, bins = super().sample_frames(n)
         if self.clip_start_share > 0:
             m = self.motion
             first = torch.rand(n, device=self.device) < self.clip_start_share
@@ -124,27 +106,6 @@ class ClimbSim(TrackingSim):
             frames = torch.where(first, m.clip_start[clip], frames)
             bins = torch.where(first, m.frame_bin[frames], bins)
         return frames, bins
-
-    def _sample_frames(self, n: int) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.start_sampler == "return":
-            return super().sample_frames(n)
-        m = self.motion
-        p = start_weights(self.bin_fail, self.bin_visit, FAIL_UNIFORM, self.fail_kernel)
-        bins = torch.multinomial(p, n, replacement=True)
-        start = m.bin_start[bins]
-        end = torch.minimum(start + 50, m.clip_end[m.bin_clip[bins]])
-        return start + (torch.rand(n, device=self.device) * (end - start).float()).long(), bins
-
-    def step(self, a: torch.Tensor) -> dict:
-        out = super().step(a)
-        if self.start_sampler == "failure_rate":  # this step's visits and failures, by bin, into the averages
-            nb = self.motion.num_bins
-            bins = self.motion.frame_bin[out["f"]]
-            here = torch.bincount(bins, minlength=nb).float()
-            failed = torch.bincount(bins[out["term"]], minlength=nb).float()
-            self.bin_visit = FAIL_ALPHA * here + (1 - FAIL_ALPHA) * self.bin_visit
-            self.bin_fail = FAIL_ALPHA * failed + (1 - FAIL_ALPHA) * self.bin_fail
-        return out
 
     def _routes(self) -> list[str]:
         """The route entities' names, clip k's route k: hbold's "route" first."""

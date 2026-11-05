@@ -1,9 +1,14 @@
-"""Phase 4: a trained climb policy in the simulator, deterministic, from the clip's
-first frame and from uniform starts. Reports how far episodes get (frames past
-the start, the share passing PASS_FRAME and completing the clip), and which cut
-ended them (the torso, off_hold, stayed: read back from the timers).
+"""A trained climb policy in the simulator, by humanoid_boldering's evaluation
+protocol (README, "Evaluation"): the task's final cuts (off-hold 5 cm, torso,
+stayed on), the policy's mean action with only the task's observation noise;
+per clip, 256 episodes from its first frame and 1024 from frames drawn
+uniformly over it, each to a cut or the clip's last frame. Reported per clip:
+from start, the share completed, the median and max frame reached and each
+episode's cut; uniform, the share completed and the median frames gained; with
+the checkpoint's iteration, training hours and environment steps.
 
-usage: python tools/climb_policy_eval.py <clip> <hbold data> <checkpoint> <out.json> [--envs N] [--off_hold_cut m]
+usage: python tools/climb_policy_eval.py <clip[,clip...]> <hbold data> <checkpoint> <out.json>
+       [--envs 256] [--uniform_envs 1024] [--record traj.npz]
 """
 
 from __future__ import annotations
@@ -20,7 +25,8 @@ parser.add_argument("clip")
 parser.add_argument("data")
 parser.add_argument("checkpoint")
 parser.add_argument("out")
-parser.add_argument("--envs", type=int, default=256)
+parser.add_argument("--envs", type=int, default=256, help="episodes from each clip's first frame")
+parser.add_argument("--uniform_envs", type=int, default=1024, help="episodes from uniform frames per clip")
 parser.add_argument("--off_hold_cut", type=float, default=0.05, help="the final curriculum stage")
 parser.add_argument("--pass_frame", type=int, default=617, help="the right hand's bar 6 hold ends here")
 parser.add_argument("--start_offset", type=int, default=0, help="from_t0 starts this many frames into each clip")
@@ -52,12 +58,13 @@ K, hist = ck["args"]["goal_frames"], ck["args"]["hist"]
 pi = Policy(OBS_DIM, mdp.goal_dim(K), hist=hist).to(DEV)
 pi.load_state_dict(ck["pi"])
 pi.eval()
-N = args.envs
+N = max(args.envs, 0 if args.no_uniform else args.uniform_envs)  # one simulator for both: unused worlds idle
 env = ClimbSim(cfg, N, motion, mdp, clip_id=args.clip, eval_mode=True)
 pi.action_low, pi.action_high = env.action_bounds()
 @torch.no_grad()
-def run(frames: torch.Tensor, record: list | None = None) -> dict:
-    """Every env from its start frame until its first cut or its clip's end.
+def run(frames: torch.Tensor, n: int, record: list | None = None) -> dict:
+    """The first n envs from their start frames until each one's first cut or
+    its clip's end (the rest of the batch idles along).
     record: filled with the furthest-reaching env's (root position, root
     quaternion, joint positions in model order, frame) per step."""
     end = motion.clip_end[motion.clip_id[frames]]
@@ -66,7 +73,7 @@ def run(frames: torch.Tensor, record: list | None = None) -> dict:
     env.refresh()
     o = mdp.add_noise(mdp.obs(env.state(), env.a_prev, env.xi, env.f))
     obs = o.unsqueeze(1).repeat(1, hist, 1)
-    alive = torch.ones(N, dtype=torch.bool, device=DEV)
+    alive = torch.arange(N, device=DEV) < n
     reached = frames.clone()
     steps = []
     cause = torch.full((N,), -1, device=DEV)  # 0 torso, 1 off_hold, 2 stayed, 3 clip end
@@ -86,6 +93,7 @@ def run(frames: torch.Tensor, record: list | None = None) -> dict:
         env.f = torch.minimum(env.f, end - 1)  # an ended env steps on in eval mode; keep its frame inside the clip
         o = mdp.add_noise(mdp.obs(env.state(), env.a_prev, env.xi, env.f))
         obs = torch.cat((obs[:, 1:], o.unsqueeze(1)), 1)
+    frames, reached, cause, end, first = frames[:n], reached[:n], cause[:n], end[:n], first[:n]
     gained = (reached - frames).float()
     if record is not None:
         k = int(gained.argmax())
@@ -96,6 +104,8 @@ def run(frames: torch.Tensor, record: list | None = None) -> dict:
         "pass_frame_share": float((reached - first >= args.pass_frame).float().mean()),
         "complete_share": float((reached >= end).float().mean()),
         "frames_gained_max": float(gained.max()),
+        "frame_reached_median": float((reached - first).float().median()),
+        "frame_reached_max": float((reached - first).max()), "episodes": n,
         "cause": {n: int((cause == k).sum()) for k, n in enumerate(names)},
         "reached_each": (reached - first).tolist(), "cause_each": [names[int(c)] for c in cause],
     }
@@ -108,11 +118,11 @@ def clip_runs(c: int, name: str) -> dict:
     """Clip c from its first frame (plus --start_offset), and from uniform frames inside it."""
     a, b = int(motion.clip_start[c]), int(motion.clip_end[c])
     rec = [] if args.record else None
-    out = {"from_t0": run(torch.full((N,), a + args.start_offset, dtype=torch.long, device=DEV), rec)}
+    out = {"from_t0": run(torch.full((N,), a + args.start_offset, dtype=torch.long, device=DEV), args.envs, rec)}
     if rec:
         recorded[name] = rec
     if not args.no_uniform:
-        out["from_uniform"] = run(torch.randint(a, b - 1, (N,), device=DEV))
+        out["from_uniform"] = run(torch.randint(a, b - 1, (N,), device=DEV), args.uniform_envs)
     return out
 
 
@@ -123,7 +133,10 @@ if args.record:
     np.savez(args.record, **{f"{k}_{field}": np.stack([r[i] for r in v]) for k, v in recorded.items()
                              for i, field in enumerate(("root_p", "root_quat", "q", "frame"))},
              joint_names=np.array(env.robot.joint_names))
-res = {"checkpoint": args.checkpoint, "off_hold_cut": args.off_hold_cut, "envs": N,
+res = {"checkpoint": args.checkpoint, "off_hold_cut": args.off_hold_cut, "envs": args.envs,
+       "uniform_envs": args.uniform_envs, "stayed_cut": not args.no_stayed_cut, "start_offset": args.start_offset,
+       "iteration": ck.get("iteration"), "train_hours": ck.get("wall_time", 0.0) / 3600,
+       "sim_steps": ck.get("sim_steps"), "env_steps": ck.get("sim_steps", 0) // ck["args"]["num_envs"],
        **next(iter(per_clip.values())), "clips": per_clip}
 print(json.dumps(res, indent=1))
 with open(args.out, "w") as f:

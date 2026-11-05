@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import math
 import random
 import os
@@ -12,11 +13,17 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
-CLIMB_PRESETS = {
-    # the fine-tunes of 2026-11-03/04: opening starts in the simulator and in imagination, and the gradients of
-    # smooth off-hold and stayed cuts in imagination (each cut's value stays the simulator's)
-    "v2": {"clip_start_share": 0.1, "opening_start_share": 0.25, "opening_frames": 60, "soft_cut_temp": 0.01,
-           "soft_cut_timer_temp": 0.1, "soft_stay": True},
+CLIMB_DEFAULTS = {
+    # the climb's settings (v2e, 2026-11-04/05): opening starts in the simulator and in imagination, the gradients
+    # of smooth off-hold and stayed cuts in imagination (each cut's value stays the simulator's), the off-hold
+    # curriculum 4x sooner (hbold's stages count PPO's env steps; SuperMimic takes 2.5 an iteration), and no
+    # activation checkpointing (exact recomputation only, 1.6x faster where memory allows)
+    "clip_start_share": 0.1, "opening_start_share": 0.25, "opening_frames": 60, "soft_cut_temp": 0.01,
+    "soft_cut_timer_temp": 0.1, "soft_stay": True, "hold_cut_scale": 0.25, "activation_checkpoint": False,
+}
+OTHER_DEFAULTS = {  # the flat-ground tracking task's, as before the climb
+    "clip_start_share": 0.0, "opening_start_share": 0.0, "opening_frames": 60, "soft_cut_temp": None,
+    "soft_cut_timer_temp": 0.1, "soft_stay": False, "hold_cut_scale": 1.0, "activation_checkpoint": True,
 }
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_envs", type=int, default=4096)
@@ -54,9 +61,8 @@ parser.add_argument("--precision", default="tf32", choices=["tf32", "fp32"])
 parser.add_argument("--device", default="cuda:0")
 parser.add_argument("--replay_device", default="cpu", help="exact float32 replay storage; samples move to --device")
 parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
-parser.add_argument("--compile_mode", default=None, choices=[None, "default", "reduce-overhead", "max-autotune"],
-                    help="torch.compile mode; reduce-overhead captures CUDA graphs")
-parser.add_argument("--activation_checkpoint", action=argparse.BooleanOptionalAction, default=True)
+parser.add_argument("--activation_checkpoint", action=argparse.BooleanOptionalAction, default=None,
+                    help="default: off for the climb, on otherwise")
 parser.add_argument("--headless", action="store_true", help="accepted for command compatibility; training is headless")
 parser.add_argument("--task", default="lafan", choices=["lafan", "climb"],
                     help="lafan: flat-ground tracking of --motion_dir; climb: the hooked G1 on a Kilter route (hbold)")
@@ -65,27 +71,22 @@ parser.add_argument("--hbold_data", type=str, default=None, help="climb: hbold's
 parser.add_argument("--njmax", type=int, default=None,
                     help="climb: constraint rows per world (default hbold's 1500; Phase 2 measured a peak of 187)")
 parser.add_argument("--nconmax", type=int, default=None, help="climb: contacts per world (default hbold's 256)")
-parser.add_argument("--start_sampler", default="return", choices=["return", "failure_rate"],
-                    help="climb: SuperMimic's return-based starts, or hbold PPO's failure-rate starts")
 parser.add_argument("--soft_cut_temp", type=float, default=None,
                     help="climb: imagined off-hold cuts keep their value but take the gradient of sigmoids of "
                          "(limb distance - cut) / this temperature in m; default the hard cut's (no gradient)")
-parser.add_argument("--soft_cut_timer_temp", type=float, default=0.1,
+parser.add_argument("--soft_cut_timer_temp", type=float, default=None,
                     help="climb, with --soft_cut_temp: the same for the off-hold timer against its tolerance, in s")
-parser.add_argument("--clip_start_share", type=float, default=0.0,
+parser.add_argument("--clip_start_share", type=float, default=None,
                     help="climb: share of simulator resets at a clip's first frame instead of the start sampler's")
-parser.add_argument("--opening_start_share", type=float, default=0.0,
+parser.add_argument("--opening_start_share", type=float, default=None,
                     help="share of each imagined batch started from replay states in a clip's first --opening_frames")
-parser.add_argument("--opening_frames", type=int, default=60)
-parser.add_argument("--soft_stay", action="store_true",
+parser.add_argument("--opening_frames", type=int, default=None)
+parser.add_argument("--soft_stay", action=argparse.BooleanOptionalAction, default=None,
                     help="climb, with --soft_cut_temp: the stayed cut's gradient too, from a sigmoid of "
                          "(STAY_NEAR - the limb's distance from the hold it left) / the same temperature")
-parser.add_argument("--hold_cut_scale", type=float, default=1.0,
+parser.add_argument("--hold_cut_scale", type=float, default=None,
                     help="climb: the off-hold cut's curriculum runs at env steps / this (0.25: 4x sooner; hbold's "
                          "stages are PPO's, and SuperMimic takes 2.5 env steps an iteration)")
-parser.add_argument("--climb_preset", default=None, choices=sorted(CLIMB_PRESETS),
-                    help="climb: a named set of the flags above (explicit flags still win); v2 also needs hbold's "
-                         "bar-based stayed cut (task.STAY_ON_BAR)")
 parser.add_argument("--init_from", default=None,
                     help="start from a small checkpoint (ckpt_*.pt: policy and world model only) at its iteration and "
                          "environment step; the critic, optimizers and replay start fresh")
@@ -97,14 +98,13 @@ parser.add_argument("--fine_tune", action="store_true",
 args = parser.parse_args()
 if args.task == "climb" and not args.clip:
     parser.error("--task climb needs --clip")
+for key, value in (CLIMB_DEFAULTS if args.task == "climb" else OTHER_DEFAULTS).items():
+    if getattr(args, key) is None:  # a flag given explicitly keeps its value
+        setattr(args, key, value)
+if args.soft_cut_temp == 0:  # --soft_cut_temp 0: the hard cuts' own gradients only
+    args.soft_cut_temp, args.soft_stay = None, False
 if args.hold_cut_scale <= 0:
     parser.error("--hold_cut_scale must be positive")
-if args.climb_preset:
-    if args.task != "climb":
-        parser.error("--climb_preset is the climb's")
-    for key, value in CLIMB_PRESETS[args.climb_preset].items():
-        if getattr(args, key) == parser.get_default(key):  # a flag given explicitly keeps its value
-            setattr(args, key, value)
 if args.hbold_data:
     os.environ["HBOLD_DATA"] = args.hbold_data  # before hbold.data reads it
 
@@ -157,10 +157,10 @@ if args.task == "climb":
     sim_cfg.physics.njmax = args.njmax or sim_cfg.physics.njmax
     sim_cfg.physics.nconmax = args.nconmax or sim_cfg.physics.nconmax
     kin, motion, mdp = climb_parts(args.clip, dev)
-    from hbold.climb import task as hbold_task
+    from hbold.climb import limbs
 
-    if args.climb_preset == "v2" and not hasattr(hbold_task, "STAY_ON_BAR"):
-        raise RuntimeError("--climb_preset v2 needs hbold's bar-based stayed cut (feat/stay-bar)")
+    if "bars" not in inspect.signature(limbs.stayed_step).parameters:
+        raise RuntimeError("the climb needs hbold's bar-based stayed cut (limbs.stayed_step's bars, route)")
     robot_path, task_sources = G1_HOOK_XML, sorted(Path(hbold.__file__).parent.rglob("*.py"))
 else:
     kin = G1Kinematics(dev)
@@ -186,7 +186,7 @@ if args.resume:
     if args.fine_tune:
         saved = resume_ck["manifest"]["args"]
         allow = {"soft_cut_temp", "soft_cut_timer_temp", "clip_start_share", "opening_start_share", "opening_frames",
-                 "soft_stay", "climb_preset", "hold_cut_scale"} | {
+                 "soft_stay", "hold_cut_scale"} | {
             k for k in vars(args) if k not in saved and getattr(args, k) == parser.get_default(k)}
         validate_resume(resume_ck, run_manifest, allow_args=allow, allow_source=True)
     else:
@@ -286,7 +286,7 @@ def _critic_input(S, f, xi_n, g):
     return torch.cat((mdp.critic_features(S, f, xi_n), g), -1)
 
 
-compile_fn = (lambda function: torch.compile(function, mode=args.compile_mode)) if args.compile else (lambda function: function)
+compile_fn = torch.compile if args.compile else (lambda function: function)
 wm_rollout = compile_fn(_wm_rollout)
 wm_err = compile_fn(_wm_err)
 imag_step = compile_fn(_imag_step)
@@ -409,7 +409,7 @@ def policy_update():
 # ------------------------------------------------------------------------------------------------
 sim_kwargs = dict(gamma=args.gamma, max_episode_steps=args.max_episode_steps, reset_noise=args.reset_noise)
 if args.task == "climb":
-    env = ClimbSim(sim_cfg, args.num_envs, motion, mdp, clip_id=args.clip, start_sampler=args.start_sampler,
+    env = ClimbSim(sim_cfg, args.num_envs, motion, mdp, clip_id=args.clip,
                    clip_start_share=args.clip_start_share, **sim_kwargs)
     replay_extra = {"aux": (mdp.aux_dim, torch.float32), "contact": (mdp.contact_dim, torch.bool)}
 else:

@@ -6,10 +6,10 @@ never removes it), with best.json beside it: the checkpoint, its metrics, its
 eval file and the run's top TOP checkpoints. KEEP_CITED.txt lists best.pt and
 the top checkpoints, so tools/climb_prune.py keeps them.
 
-Ranking, from t0:
-- one clip: complete share, then the median frame reached;
-- several: the mean over clips of median frame reached / clip length, then
-  the number of completed rollouts over all clips.
+Ranking, from the first frame (humanoid_boldering's README, "Evaluation"):
+the highest share completed, then the highest median frame reached; with
+several clips, the mean over clips of each (the median as a share of its
+clip's length).
 
 usage: python tools/climb_best.py <run dir> '<eval json glob>' [--data <hbold data>]
   e.g. tools/climb_best.py runs/mv2_seed1 'eval_v2/mv2_seed1_ckpt_*.json' --data /root/leeky/projects/hbold-multi/data
@@ -50,8 +50,8 @@ def score(d: dict, data: str | None, lengths: dict) -> tuple[tuple[float, float]
     per = {c: {"median_reached": median_reached(v["from_t0"]), "complete_share": v["from_t0"]["complete_share"],
                "length": lengths[c]} for c, v in clips.items()}
     frac = float(np.mean([p["median_reached"] / p["length"] for p in per.values()]))
-    done = float(sum(p["complete_share"] * d.get("envs", 1) for p in per.values()))
-    return (frac, done), {"mean_median_fraction": frac, "completed_rollouts": done, "clips": per}
+    done = float(np.mean([p["complete_share"] for p in per.values()]))
+    return (done, frac), {"mean_complete_share": done, "mean_median_fraction": frac, "clips": per}
 
 
 def ranked(evals: str, data: str | None = None) -> list[tuple]:
