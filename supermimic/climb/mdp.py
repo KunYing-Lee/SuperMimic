@@ -26,6 +26,44 @@ LIMB_IDX = [TRACKED_BODIES.index(b) for b in LIMB_BODIES]
 NEAR_BARS = 4  # bars each limb sees in the world model's inputs
 GOAL_EXTRA = 9 + 4  # the next landing in the pelvis frame, and which limb it is
 TRACKING_MAX = sum(weight for _, weight in task.TRACKING.values())
+TURN_PER_M = 10.0  # a soft cut's temperature in turn per its temperature in distance: 1 cm ~ 0.1 rad
+
+
+def soft_off_hold(far, turn, bearing, threshold: float, temp: float):
+    """(N, 4) a smooth stand-in for off_hold_step's off test: each of its three
+    comparisons as a sigmoid of (value - cut) / temp, joined as a soft or.
+    Tends to the hard test as temp -> 0."""
+    cut = torch.full((far.shape[-1],), threshold, device=far.device)
+    cut[2:] *= task.FOOT_SCALE  # the feet, as in off_hold_step
+    on_hold = torch.sigmoid((far - cut) / temp) * bearing
+    free = torch.sigmoid((far - task.FREE_CUT) / temp)
+    turned = torch.sigmoid((turn - task.TURN_CUT) / (temp * TURN_PER_M))
+    return 1 - (1 - on_hold) * (1 - free) * (1 - turned)
+
+
+def soft_timed_out(timer_s, tolerance: float, dt: float, temp_s: float):
+    """(N,) a smooth stand-in for timed_out: each limb's sigmoid of (timer - the
+    cut's midpoint) / temp_s, joined as a soft or. The timers step by dt, so the
+    midpoint between the last kept and the first cut value is tolerance + dt / 2."""
+    return 1 - (1 - torch.sigmoid((timer_s - tolerance - dt / 2) / temp_s)).prod(-1)
+
+
+def soft_stayed(site, left, ref_site, bearing, near: float, gone: float, temp: float, bar_test: dict):
+    """(N, 4) a smooth stand-in for stayed_step's stayed test: a sigmoid of
+    (near - the limb's distance from the hold it left) / temp, where the
+    reference has gone and does not bear (those are the reference's, not the
+    policy's). bar_test: stayed_step's bars, route and on_bar, if any."""
+    dist = (site - left).square().sum(-1).sqrt()
+    if bar_test:
+        on_bar = torch.tensor(bar_test["on_bar"], device=site.device)
+        dist = torch.where(on_bar, geometry.to_bar_of(site, left, bar_test["bars"], bar_test["route"]), dist)
+    ref_gone = (ref_site - left).square().sum(-1).sqrt() > gone
+    return torch.sigmoid((near - dist) / temp) * (ref_gone & ~bearing)
+
+
+def straight_through(hard, soft):
+    """hard's value with soft's gradient."""
+    return hard + (soft - soft.detach())
 
 
 class ClimbMDP(MDP):
@@ -85,10 +123,18 @@ class ClimbMDP(MDP):
         board = geometry.board_features(S[0], mat_to_quat(S[1]), self.board, route=route)
         return torch.cat((bars.flatten(-3), board), -1)
 
-    def terminate(self, S, f, aux, F=()):
+    def terminate(self, S, f, aux, F=(), soft=None):
         """hbold's cuts after a step to S at reference frame f: the torso's
         height, a limb off its hold (off_hold) or on the one it should have
-        left (stayed) past their tolerances. aux: (B, 8) their timers."""
+        left (stayed) past their tolerances. aux: (B, 8) their timers.
+
+        soft: None, or (temp in m, temp in s, stayed too) for imagination. The
+        cut is then a float with the hard cut's value but the gradient of a
+        smooth off-hold cut (and, with stayed too, a smooth stayed cut): each
+        limb's test and its timer's cut as sigmoids (soft_off_hold or
+        soft_stayed, soft_timed_out), through the timers carried in aux. The
+        values, timers included, stay the simulator's; only the gradient says
+        how near a limb is to its cut."""
         m = self.motion
         F = F or self.features(S)
         bp, sites = F[0], F[4]
@@ -96,11 +142,28 @@ class ClimbMDP(MDP):
         bearing = m.bearing[f]
         off = limbs.off_hold_step(aux[:, :4], far, turn, bearing, self.hold_cut, task.FOOT_SCALE,
                                   task.FREE_CUT, task.TURN_CUT, CONTROL_DT)
+        # the hands' stayed test against the whole bar they left, where hbold has it
+        bar_test = {"bars": self.bars, "route": m.clip_id[f], "on_bar": task.STAY_ON_BAR} \
+            if hasattr(task, "STAY_ON_BAR") else {}
         on = limbs.stayed_step(aux[:, 4:], sites, m.left_pos[f], m.hold_pos[f], bearing, task.STAY_NEAR,
-                               task.STAY_GONE, CONTROL_DT)
+                               task.STAY_GONE, CONTROL_DT, **bar_test)
         low = tracking.anchor_z_off(bp[:, ANCHOR], m.body_p[f][:, ANCHOR], task.ANCHOR_Z_CUT)
-        cut = low | limbs.timed_out(off, task.HOLD_TOLERANCE) | limbs.timed_out(on, task.STAY_TOLERANCE)
-        return torch.cat((off, on), -1), cut
+        timed_off = limbs.timed_out(off, task.HOLD_TOLERANCE)
+        rest = low | limbs.timed_out(on, task.STAY_TOLERANCE)
+        if soft is None:
+            return torch.cat((off, on), -1), rest | timed_off
+        temp, temp_s, stay_too = soft
+        is_off = straight_through((off > 0).float(), soft_off_hold(far, turn, bearing, self.hold_cut, temp))
+        off = (aux[:, :4] + CONTROL_DT) * is_off  # off_hold_step's timers, differentiable
+        timed_off = straight_through(timed_off.float(), soft_timed_out(off, task.HOLD_TOLERANCE, CONTROL_DT, temp_s))
+        if not stay_too:
+            return torch.cat((off, on), -1), 1 - (1 - rest.float()) * (1 - timed_off)
+        is_on = straight_through((on > 0).float(), soft_stayed(sites, m.left_pos[f], m.hold_pos[f], bearing,
+                                                               task.STAY_NEAR, task.STAY_GONE, temp, bar_test))
+        on = (aux[:, 4:] + CONTROL_DT) * is_on  # stayed_step's timers, differentiable
+        timed_on = straight_through(limbs.timed_out(on, task.STAY_TOLERANCE).float(),
+                                    soft_timed_out(on, task.STAY_TOLERANCE, CONTROL_DT, temp_s))
+        return torch.cat((off, on), -1), 1 - (1 - low.float()) * (1 - timed_off) * (1 - timed_on)
 
     def termination(self, S, f) -> torch.Tensor:
         raise NotImplementedError("the climb's cuts carry timers: use terminate(S, f, aux)")
