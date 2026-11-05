@@ -52,8 +52,7 @@ adds its flags and defaults (`add_arguments`), builds its MDP and physics (`setu
 simulator (`make_env`), draws imagined starts from replay (`sample_starts`), and declares
 the files a strict resume checks (`sources`, `assets`) and the flags `--fine_tune` may
 change. Its MDP may override `schedule(env_steps)` and `imagine_termination`. A launcher
-outside this repository, pinned to a commit of it, runs `supermimic.train.main(task=MyTask())`;
-the climbing task is `humanoid_boldering`'s `hbold.supermimic`.
+outside this repository, pinned to a commit of it, runs `supermimic.train.main(task=MyTask())`.
 
 ## License
 
